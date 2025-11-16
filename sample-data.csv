@@ -1,0 +1,25 @@
+<!-- Example Excel file structure for bulk certificate generation -->
+
+<!-- Save this as certificates.csv or use it as a template in Excel -->
+
+Name,Email,Date,Achievement
+John Doe,john@example.com,2025-01-15,Excellence in Leadership
+Jane Smith,jane@example.com,2025-01-15,Outstanding Performance
+Bob Johnson,bob@example.com,2025-01-16,Innovation Award
+Alice Williams,alice@example.com,2025-01-16,Team Player
+Charlie Brown,charlie@example.com,2025-01-17,Best Newcomer
+Diana Prince,diana@example.com,2025-01-17,Mentor of the Year
+Edward Norton,edward@example.com,2025-01-18,Customer Service Excellence
+Fiona Green,fiona@example.com,2025-01-18,Technical Excellence
+George Miller,george@example.com,2025-01-19,Creative Solution Award
+Hannah Lee,hannah@example.com,2025-01-19,Leadership Excellence
+
+<!-- 
+Usage Instructions:
+1. Save this content as a .csv file or copy into Excel
+2. The first row contains headers (Name, Email, Date, Achievement)
+3. Each subsequent row represents one certificate
+4. In the app, upload this file
+5. Select which column to use for the certificate name (usually column 0 = Name)
+6. The app will generate one certificate per row
+-->
