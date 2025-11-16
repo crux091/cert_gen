@@ -24,6 +24,57 @@ export default function CanvasEditor({
 }: CanvasEditorProps) {
   const canvasRef = useRef<HTMLDivElement>(null)
 
+  // Handle keyboard events for deleting elements
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      console.log('Key pressed:', e.key, 'Selected:', selectedElementId)
+      
+      if (!selectedElementId) {
+        console.log('No element selected')
+        return
+      }
+
+      // Check if Delete or Backspace key is pressed
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        // Don't delete if user is typing in an input field
+        const target = e.target as HTMLElement
+        console.log('Target:', target.tagName, 'isContentEditable:', target.isContentEditable)
+        
+        if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
+          console.log('Ignoring - user is typing in input field')
+          return
+        }
+
+        // Prevent default behavior
+        e.preventDefault()
+
+        // Find the selected element
+        const selectedElement = elements.find(el => el.id === selectedElementId)
+        console.log('Selected element:', selectedElement)
+        
+        // Check if element is locked
+        if (selectedElement?.locked) {
+          alert('This element is locked. Please unlock it first to delete.')
+          return
+        }
+
+        console.log('Deleting element:', selectedElementId)
+        // Delete the selected element
+        setElements(prev => prev.filter(el => el.id !== selectedElementId))
+        setSelectedElementId(null)
+      }
+    }
+
+    // Add event listener
+    document.addEventListener('keydown', handleKeyDown)
+    console.log('Keyboard listener added')
+    
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown)
+      console.log('Keyboard listener removed')
+    }
+  }, [selectedElementId, elements, setElements, setSelectedElementId])
+
   const handleElementUpdate = (id: string, x: number, y: number) => {
     setElements(prev =>
       prev.map(el => (el.id === id ? { ...el, x, y } : el))
