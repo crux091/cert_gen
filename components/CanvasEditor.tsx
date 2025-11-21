@@ -98,7 +98,7 @@ export default function CanvasEditor({
   }
 
   return (
-    <div className="flex items-center justify-center min-h-[calc(100vh-4rem)] p-8">
+    <div className="flex items-center justify-center min-h-full p-8">
       <div
         ref={canvasRef}
         id="certificate-canvas"

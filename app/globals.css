@@ -30,6 +30,11 @@ body {
   .text-balance {
     text-wrap: balance;
   }
+  
+  /* Custom border width for tab buttons */
+  .border-b-3 {
+    border-bottom-width: 3px;
+  }
 }
 
 /* Reduce motion for accessibility */
