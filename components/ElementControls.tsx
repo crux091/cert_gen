@@ -1,7 +1,9 @@
 'use client'
 
+import { useState } from 'react'
 import { CertificateElement } from '@/types/certificate'
 import { Lock, Unlock, Trash2, Copy, ArrowUp, ArrowDown } from 'lucide-react'
+import loadFont from '@/lib/fontLoader'
 
 interface ElementControlsProps {
   element: CertificateElement
@@ -20,6 +22,37 @@ export default function ElementControls({
   onDelete,
   onDuplicate,
 }: ElementControlsProps) {
+  const [customFontUrl, setCustomFontUrl] = useState('')
+  const [customFontFamily, setCustomFontFamily] = useState('')
+
+  async function handleLoadFont(apply = false) {
+    if (!customFontUrl || !customFontFamily) return
+    try {
+      await loadFont(customFontUrl, customFontFamily)
+      if (apply) onUpdate({ fontFamily: customFontFamily })
+    } catch (err) {
+      // swallow - could show toast in future
+      // eslint-disable-next-line no-console
+      console.error('Failed to load font', err)
+    }
+  }
+
+  function tryParseGoogleFonts(url: string) {
+    try {
+      const m = url.match(/fonts\.google\.com\/specimen\/([^\/?#]+)/i)
+      if (!m) return false
+      const slug = decodeURIComponent(m[1])
+      // specimen slugs often use + for spaces
+      const familyName = slug.replace(/\+/g, ' ')
+      const familyParam = familyName.replace(/\s+/g, '+')
+      const cssUrl = `https://fonts.googleapis.com/css2?family=${familyParam}&display=swap`
+      setCustomFontUrl(cssUrl)
+      setCustomFontFamily(familyName)
+      return true
+    } catch (e) {
+      return false
+    }
+  }
   return (
     <div className="mb-6 p-4 bg-gray-50 dark:bg-gray-800 rounded-lg">
       <div className="flex items-center justify-between mb-3">
@@ -127,6 +160,51 @@ export default function ElementControls({
             <option key={font} value={font}>{font}</option>
           ))}
         </select>
+      </div>
+
+      {/* Custom Font Loader */}
+      <div className="mb-3">
+        <label className="block text-xs text-gray-600 dark:text-gray-400 mb-1">
+          Custom Font (from URL)
+        </label>
+        <input
+          type="text"
+          placeholder="https://…/stylesheet.css or …/font.woff2"
+          value={customFontUrl}
+          onChange={(e) => setCustomFontUrl(e.target.value)}
+          className="w-full px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-white mb-2"
+        />
+        <input
+          type="text"
+          placeholder="Font family name to use (e.g. 'My Font')"
+          value={customFontFamily}
+          onChange={(e) => setCustomFontFamily(e.target.value)}
+          className="w-full px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-white mb-2"
+        />
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => { tryParseGoogleFonts(customFontUrl) }}
+            className="px-2 py-1 text-xs rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-600"
+          >
+            From Google
+          </button>
+          <button
+            type="button"
+            onClick={() => handleLoadFont(false)}
+            className="flex-1 px-2 py-1 text-xs rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-600"
+          >
+            Load
+          </button>
+          <button
+            type="button"
+            onClick={() => handleLoadFont(true)}
+            disabled={element.locked}
+            className="flex-1 px-2 py-1 text-xs rounded border border-primary-600 bg-primary-600 text-white hover:opacity-95 disabled:opacity-50"
+          >
+            Load & Apply
+          </button>
+        </div>
       </div>
 
       {/* Font Weight */}
