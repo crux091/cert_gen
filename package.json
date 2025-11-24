@@ -9,7 +9,9 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@types/fabric": "^5.3.10",
     "clsx": "^2.1.0",
+    "fabric": "^5.5.2",
     "file-saver": "^2.0.5",
     "framer-motion": "^11.0.0",
     "html2canvas": "^1.4.1",

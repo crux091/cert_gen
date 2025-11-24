@@ -13,6 +13,10 @@ export interface CertificateElement {
   alignment?: 'left' | 'center' | 'right'
   locked: boolean
   zIndex: number
+  angle?: number // Rotation angle in degrees
+  scaleX?: number // Horizontal scale
+  scaleY?: number // Vertical scale
+  opacity?: number // 0-1
 }
 
 export interface CanvasBackground {
@@ -32,6 +36,8 @@ export interface SavedLayout {
 export interface ExportOptions {
   dpi?: number
   quality?: number
+  format?: 'png' | 'jpeg' | 'svg' | 'pdf'
+  multiplier?: number // Scale multiplier for high-res exports
 }
 
 export interface BulkExportData {
