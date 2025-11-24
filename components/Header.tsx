@@ -1,15 +1,11 @@
 'use client'
 
-import { Menu, Moon, Sun } from 'lucide-react'
-import { useTheme } from '@/components/ThemeProvider'
+import { Moon, Sun } from 'lucide-react'
+import { useTheme } from 'next-themes'
 import { useEffect, useState } from 'react'
 
-interface HeaderProps {
-  onMenuClick: () => void
-}
-
-export default function Header({ onMenuClick }: HeaderProps) {
-  const { theme, toggleTheme } = useTheme()
+export default function Header() {
+  const { setTheme, theme } = useTheme()
   const [mounted, setMounted] = useState(false)
 
   useEffect(() => {
@@ -18,31 +14,19 @@ export default function Header({ onMenuClick }: HeaderProps) {
 
   return (
     <header className="fixed top-0 left-0 right-0 z-50 bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 transition-colors">
-      <div className="flex items-center justify-between px-4 py-3">
-        <div className="flex items-center gap-4">
-          <button
-            onClick={onMenuClick}
-            className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-            aria-label="Open menu"
-          >
-            <Menu className="w-6 h-6 text-gray-700 dark:text-gray-300" />
-          </button>
-          <h1 className="text-xl font-bold text-primary-600 dark:text-primary-400">
-            Certificate Generator
-          </h1>
-        </div>
+      <div className="flex items-center justify-between px-6 py-3">
+        <h1 className="text-xl font-bold text-primary-600 dark:text-primary-400">
+          Certificate Generator
+        </h1>
         
         {mounted && (
           <button
-            onClick={toggleTheme}
-            className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+            onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+            className="relative p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
             aria-label="Toggle theme"
           >
-            {theme === 'dark' ? (
-              <Sun className="w-5 h-5 text-yellow-500" />
-            ) : (
-              <Moon className="w-5 h-5 text-gray-700" />
-            )}
+            <Sun className="h-[1.2rem] w-[1.2rem] rotate-0 scale-100 transition-all dark:-rotate-90 dark:scale-0" />
+            <Moon className="absolute inset-2 h-[1.2rem] w-[1.2rem] rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100" />
           </button>
         )}
       </div>

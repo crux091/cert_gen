@@ -2,13 +2,11 @@
 
 import { useState } from 'react'
 import Header from '@/components/Header'
-import Sidebar from '@/components/Sidebar'
+import Ribbon from '@/components/Ribbon'
 import CanvasEditor from '@/components/CanvasEditor'
 import { CertificateElement, CanvasBackground } from '@/types/certificate'
-import { ThemeProvider } from '@/components/ThemeProvider'
 
 export default function Home() {
-  const [sidebarOpen, setSidebarOpen] = useState(false)
   const [background, setBackground] = useState<CanvasBackground>({
     type: 'color',
     color: '#ffffff',
@@ -18,13 +16,11 @@ export default function Home() {
   const [canvasSize, setCanvasSize] = useState({ width: 800, height: 600 })
 
   return (
-    <ThemeProvider>
-      <div className="min-h-screen bg-white dark:bg-gray-900 transition-colors">
-        <Header onMenuClick={() => setSidebarOpen(true)} />
-        
-        <Sidebar
-          isOpen={sidebarOpen}
-          onClose={() => setSidebarOpen(false)}
+    <div className="h-screen bg-gray-100 dark:bg-gray-900 transition-colors flex flex-col overflow-hidden">
+      <Header />
+      
+      <div className="pt-16 flex-none z-40 relative">
+        <Ribbon
           elements={elements}
           setElements={setElements}
           selectedElementId={selectedElementId}
@@ -34,18 +30,18 @@ export default function Home() {
           background={background}
           setBackground={setBackground}
         />
-        
-        <main className="pt-16">
-          <CanvasEditor
-            elements={elements}
-            setElements={setElements}
-            selectedElementId={selectedElementId}
-            setSelectedElementId={setSelectedElementId}
-            canvasSize={canvasSize}
-            background={background}
-          />
-        </main>
       </div>
-    </ThemeProvider>
+      
+      <main className="flex-1 overflow-auto relative z-0 bg-gray-200 dark:bg-gray-950">
+        <CanvasEditor
+          elements={elements}
+          setElements={setElements}
+          selectedElementId={selectedElementId}
+          setSelectedElementId={setSelectedElementId}
+          canvasSize={canvasSize}
+          background={background}
+        />
+      </main>
+    </div>
   )
 }

@@ -1,4 +1,4 @@
-import html2canvas from 'html2canvas'
+import { fabric } from 'fabric'
 import jsPDF from 'jspdf'
 import JSZip from 'jszip'
 import { saveAs } from 'file-saver'
@@ -12,73 +12,159 @@ function sanitizeFilename(filename: string): string {
 }
 
 /**
- * Export certificate as PNG
- * @param canvasElement - The DOM element to capture
+ * Get Fabric.js canvas instance from canvas element
+ */
+function getFabricCanvas(canvasElement: HTMLElement): fabric.Canvas | null {
+  const canvas = canvasElement.querySelector('canvas')
+  if (!canvas) {
+    console.error('Canvas element not found in container')
+    return null
+  }
+  
+  // Check if canvas instance is stored on the element (most reliable)
+  // @ts-ignore
+  if (canvas.__fabricCanvas) {
+    // @ts-ignore
+    return canvas.__fabricCanvas
+  }
+  
+  // Fallback: try __canvas property
+  // @ts-ignore
+  if (canvas.__canvas) {
+    // @ts-ignore
+    return canvas.__canvas
+  }
+  
+  console.error('Fabric.js canvas instance not found. Make sure the canvas is initialized.')
+  return null
+}
+
+/**
+ * Export certificate as PNG using Fabric.js
+ * @param canvasElement - The container element with Fabric.js canvas
  * @param filename - The name of the file to save
- * @param options - Export options (DPI, quality)
+ * @param options - Export options (DPI, quality, multiplier)
  */
 export async function exportToPNG(
   canvasElement: HTMLElement,
   filename: string,
   options: ExportOptions = { dpi: 300, quality: 1 }
 ): Promise<void> {
-  const scale = (options.dpi || 300) / 96 // 96 is the default screen DPI
-  
-  const canvas = await html2canvas(canvasElement, {
-    scale,
-    backgroundColor: null,
-    logging: false,
-    useCORS: true,
-    allowTaint: true,
+  const fabricCanvas = getFabricCanvas(canvasElement)
+  if (!fabricCanvas) {
+    throw new Error('Fabric.js canvas not found')
+  }
+
+  // Wait for fonts to load
+  try {
+    await document.fonts.ready
+  } catch (e) {
+    console.warn('Font loading wait failed', e)
+  }
+
+  // Calculate multiplier from DPI (default 96 DPI screen)
+  const multiplier = options.multiplier || (options.dpi || 300) / 96
+
+  // Deselect all objects before export
+  fabricCanvas.discardActiveObject()
+  fabricCanvas.renderAll()
+
+  // Export to data URL with high quality
+  const dataURL = fabricCanvas.toDataURL({
+    format: 'png',
+    quality: options.quality || 1,
+    multiplier: multiplier,
+    enableRetinaScaling: false,
   })
 
-  canvas.toBlob(
-    (blob) => {
-      if (blob) {
-        saveAs(blob, sanitizeFilename(filename))
-      }
-    },
-    'image/png',
-    options.quality || 1
-  )
+  // Convert data URL to blob and download
+  fetch(dataURL)
+    .then(res => res.blob())
+    .then(blob => {
+      saveAs(blob, sanitizeFilename(filename))
+    })
+    .catch(err => {
+      console.error('Export failed:', err)
+      throw err
+    })
 }
 
 /**
- * Export certificate as PDF
- * @param canvasElement - The DOM element to capture
+ * Export certificate as PDF using Fabric.js
+ * @param canvasElement - The container element with Fabric.js canvas
  * @param filename - The name of the file to save
- * @param options - Export options (DPI)
+ * @param options - Export options (DPI, multiplier)
  */
 export async function exportToPDF(
   canvasElement: HTMLElement,
   filename: string,
   options: ExportOptions = { dpi: 300 }
 ): Promise<void> {
-  const scale = (options.dpi || 300) / 96
-  
-  const canvas = await html2canvas(canvasElement, {
-    scale,
-    backgroundColor: null,
-    logging: false,
-    useCORS: true,
-    allowTaint: true,
+  const fabricCanvas = getFabricCanvas(canvasElement)
+  if (!fabricCanvas) {
+    throw new Error('Fabric.js canvas not found')
+  }
+
+  try {
+    await document.fonts.ready
+  } catch (e) {
+    console.warn('Font loading wait failed', e)
+  }
+
+  const multiplier = options.multiplier || (options.dpi || 300) / 96
+
+  // Deselect all objects before export
+  fabricCanvas.discardActiveObject()
+  fabricCanvas.renderAll()
+
+  // Export to data URL
+  const dataURL = fabricCanvas.toDataURL({
+    format: 'png',
+    quality: 1,
+    multiplier: multiplier,
+    enableRetinaScaling: false,
   })
 
-  const imgData = canvas.toDataURL('image/png')
-  
-  // Calculate PDF dimensions to match canvas aspect ratio
-  const imgWidth = canvas.width / scale
-  const imgHeight = canvas.height / scale
-  
-  // Create PDF with custom dimensions
+  // Get canvas dimensions
+  const width = (fabricCanvas.width || 800) * multiplier
+  const height = (fabricCanvas.height || 600) * multiplier
+
+  // Create PDF with exact canvas dimensions
   const pdf = new jsPDF({
-    orientation: imgWidth > imgHeight ? 'landscape' : 'portrait',
+    orientation: width > height ? 'landscape' : 'portrait',
     unit: 'px',
-    format: [imgWidth, imgHeight],
+    format: [width / multiplier, height / multiplier],
   })
 
-  pdf.addImage(imgData, 'PNG', 0, 0, imgWidth, imgHeight)
+  // Add image to PDF
+  pdf.addImage(dataURL, 'PNG', 0, 0, width / multiplier, height / multiplier)
   pdf.save(sanitizeFilename(filename))
+}
+
+/**
+ * Export certificate as SVG using Fabric.js
+ * @param canvasElement - The container element with Fabric.js canvas
+ * @param filename - The name of the file to save
+ */
+export async function exportToSVG(
+  canvasElement: HTMLElement,
+  filename: string
+): Promise<void> {
+  const fabricCanvas = getFabricCanvas(canvasElement)
+  if (!fabricCanvas) {
+    throw new Error('Fabric.js canvas not found')
+  }
+
+  // Deselect all objects before export
+  fabricCanvas.discardActiveObject()
+  fabricCanvas.renderAll()
+
+  // Export to SVG
+  const svgString = fabricCanvas.toSVG()
+  
+  // Create blob and download
+  const blob = new Blob([svgString], { type: 'image/svg+xml' })
+  saveAs(blob, sanitizeFilename(filename))
 }
 
 /**
@@ -89,38 +175,53 @@ async function generateCertificateBlob(
   format: 'png' | 'pdf',
   options: ExportOptions = { dpi: 300 }
 ): Promise<Blob> {
-  const scale = (options.dpi || 300) / 96
-  
-  const canvas = await html2canvas(canvasElement, {
-    scale,
-    backgroundColor: null,
-    logging: false,
-    useCORS: true,
-    allowTaint: true,
-  })
+  const fabricCanvas = getFabricCanvas(canvasElement)
+  if (!fabricCanvas) {
+    throw new Error('Fabric.js canvas not found')
+  }
+
+  try {
+    await document.fonts.ready
+  } catch (e) {
+    console.warn('Font loading wait failed', e)
+  }
+
+  const multiplier = options.multiplier || (options.dpi || 300) / 96
+
+  // Deselect all objects before export
+  fabricCanvas.discardActiveObject()
+  fabricCanvas.renderAll()
 
   if (format === 'png') {
-    return new Promise((resolve) => {
-      canvas.toBlob(
-        (blob) => {
-          resolve(blob!)
-        },
-        'image/png',
-        options.quality || 1
-      )
-    })
-  } else {
-    const imgData = canvas.toDataURL('image/png')
-    const imgWidth = canvas.width / scale
-    const imgHeight = canvas.height / scale
-    
-    const pdf = new jsPDF({
-      orientation: imgWidth > imgHeight ? 'landscape' : 'portrait',
-      unit: 'px',
-      format: [imgWidth, imgHeight],
+    const dataURL = fabricCanvas.toDataURL({
+      format: 'png',
+      quality: options.quality || 1,
+      multiplier: multiplier,
+      enableRetinaScaling: false,
     })
 
-    pdf.addImage(imgData, 'PNG', 0, 0, imgWidth, imgHeight)
+    // Convert data URL to blob
+    const response = await fetch(dataURL)
+    return response.blob()
+  } else {
+    // PDF format
+    const dataURL = fabricCanvas.toDataURL({
+      format: 'png',
+      quality: 1,
+      multiplier: multiplier,
+      enableRetinaScaling: false,
+    })
+
+    const width = (fabricCanvas.width || 800) * multiplier
+    const height = (fabricCanvas.height || 600) * multiplier
+
+    const pdf = new jsPDF({
+      orientation: width > height ? 'landscape' : 'portrait',
+      unit: 'px',
+      format: [width / multiplier, height / multiplier],
+    })
+
+    pdf.addImage(dataURL, 'PNG', 0, 0, width / multiplier, height / multiplier)
     return pdf.output('blob')
   }
 }
@@ -131,7 +232,7 @@ async function generateCertificateBlob(
  * @param nameElementId - ID of the element to replace with each name
  * @param elements - Array of certificate elements
  * @param setElements - Function to update elements
- * @param canvasElement - The DOM element to capture
+ * @param canvasElement - The container element with Fabric.js canvas
  * @param format - Export format (png or pdf)
  * @param onProgress - Callback for progress updates
  */
@@ -158,8 +259,8 @@ export async function bulkExportCertificates(
       )
       setElements(updatedElements)
 
-      // Wait longer for DOM and React to update
-      await new Promise(resolve => setTimeout(resolve, 300))
+      // Wait for Fabric.js to update and render
+      await new Promise(resolve => setTimeout(resolve, 500))
 
       // Generate certificate
       const blob = await generateCertificateBlob(canvasElement, format)
