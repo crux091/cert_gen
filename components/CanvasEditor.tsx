@@ -90,15 +90,62 @@ export default function CanvasEditor({
 
     // Handle text editing
     canvas.on('text:editing:entered', (e) => {
-      const obj = e.target
+      const obj = e.target as fabric.Textbox
       if (obj && obj.data?.elementId) {
         setSelectedElementId(obj.data.elementId)
+        // Store original position and canvas dimensions
+        obj.data.originalLeft = obj.left
+        obj.data.originalTop = obj.top
+        // Lock canvas dimensions during editing
+        canvas.setDimensions({
+          width: canvasSize.width,
+          height: canvasSize.height,
+        })
+        // Ensure textbox width doesn't exceed canvas bounds
+        const maxWidth = canvasSize.width * 0.8
+        obj.set({ 
+          width: maxWidth,
+          splitByGrapheme: false,
+        })
+        canvas.renderAll()
+      }
+    })
+
+    canvas.on('text:editing:exited', (e) => {
+      const obj = e.target as fabric.Textbox
+      if (obj && obj.data?.elementId) {
+        // Restore position and lock the width after editing
+        const maxWidth = canvasSize.width * 0.8
+        obj.set({ 
+          width: maxWidth,
+          splitByGrapheme: false,
+          left: obj.data.originalLeft || obj.left,
+          top: obj.data.originalTop || obj.top,
+        })
+        // Ensure canvas dimensions remain fixed
+        canvas.setDimensions({
+          width: canvasSize.width,
+          height: canvasSize.height,
+        })
+        canvas.renderAll()
       }
     })
 
     canvas.on('text:changed', (e) => {
       const obj = e.target as fabric.Textbox
       if (!obj || !obj.data?.elementId) return
+
+      // Constrain width during typing
+      const maxWidth = canvasSize.width * 0.8
+      if (obj.width && obj.width !== maxWidth) {
+        obj.set({ width: maxWidth })
+      }
+
+      // Lock canvas dimensions during typing
+      canvas.setDimensions({
+        width: canvasSize.width,
+        height: canvasSize.height,
+      })
 
       const elementId = obj.data.elementId
       setElements(prev => prev.map(el => {
@@ -168,15 +215,50 @@ export default function CanvasEditor({
       canvas.setBackgroundColor(background.color || '#ffffff', () => {
         canvas.renderAll()
       })
+      canvas.setBackgroundImage(null as any, () => {
+        canvas.renderAll()
+      })
     } else if (background.type === 'image' && background.imageUrl) {
       fabric.Image.fromURL(background.imageUrl, (img) => {
-        img.scaleToWidth(canvasSize.width)
-        img.scaleToHeight(canvasSize.height)
+        // Scale to fit canvas exactly while maintaining aspect ratio
+        const scaleX = canvasSize.width / (img.width || 1)
+        const scaleY = canvasSize.height / (img.height || 1)
+        img.set({
+          scaleX: scaleX,
+          scaleY: scaleY,
+          left: 0,
+          top: 0,
+          originX: 'left',
+          originY: 'top',
+          selectable: false,
+          evented: false,
+          lockMovementX: true,
+          lockMovementY: true,
+          lockRotation: true,
+          lockScalingX: true,
+          lockScalingY: true,
+          hasControls: false,
+          hasBorders: false,
+          absolutePositioned: true,
+        })
         canvas.setBackgroundImage(img, () => {
           canvas.renderAll()
+        }, {
+          // Ensure background is clipped to canvas bounds
+          crossOrigin: 'anonymous',
         })
       }, { crossOrigin: 'anonymous' })
     }
+    
+    // Force canvas to not exceed its set dimensions
+    canvas.clipPath = new fabric.Rect({
+      left: 0,
+      top: 0,
+      width: canvasSize.width,
+      height: canvasSize.height,
+      absolutePositioned: true,
+    })
+    canvas.renderAll()
   }, [canvasSize, background])
 
   // Sync elements with Fabric.js objects
@@ -225,8 +307,16 @@ export default function CanvasEditor({
             opacity: element.opacity || 1,
             width: canvasSize.width * 0.8, // 80% of canvas width
             splitByGrapheme: false,
-            originX: 'center',
-            originY: 'center',
+            originX: 'left',
+            originY: 'top',
+            editable: false,
+            lockScalingFlip: true,
+            fixedWidth: canvasSize.width * 0.8,
+          })
+          // Prevent width from changing
+          textObj.setControlsVisibility({
+            ml: false, // middle left
+            mr: false, // middle right
           })
           textObj.data = { ...textObj.data, locked: element.locked, zIndex: element.zIndex }
         } else {
@@ -251,8 +341,16 @@ export default function CanvasEditor({
             opacity: element.opacity || 1,
             width: canvasSize.width * 0.8, // 80% of canvas width
             splitByGrapheme: false,
-            originX: 'center',
-            originY: 'center',
+            originX: 'left',
+            originY: 'top',
+            editable: false,
+            lockScalingFlip: true,
+            fixedWidth: canvasSize.width * 0.8,
+          })
+          // Prevent width from changing
+          textObj.setControlsVisibility({
+            ml: false, // middle left
+            mr: false, // middle right
           })
           textObj.data = { elementId: element.id, locked: element.locked, zIndex: element.zIndex }
           canvas.add(textObj)
