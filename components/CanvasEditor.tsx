@@ -212,7 +212,7 @@ export default function CanvasEditor({
             fontWeight: element.fontWeight || 'normal',
             fontFamily: element.fontFamily || 'Arial',
             fill: element.color || '#000000',
-            textAlign: element.alignment || 'left',
+            textAlign: element.alignment || 'center',
             lockMovementX: element.locked,
             lockMovementY: element.locked,
             lockRotation: element.locked,
@@ -223,8 +223,10 @@ export default function CanvasEditor({
             scaleX: element.scaleX || 1,
             scaleY: element.scaleY || 1,
             opacity: element.opacity || 1,
-            width: canvasSize.width * 0.9, // 90% of canvas width
+            width: canvasSize.width * 0.8, // 80% of canvas width
             splitByGrapheme: false,
+            originX: 'center',
+            originY: 'center',
           })
           textObj.data = { ...textObj.data, locked: element.locked, zIndex: element.zIndex }
         } else {
@@ -236,7 +238,7 @@ export default function CanvasEditor({
             fontWeight: element.fontWeight || 'normal',
             fontFamily: element.fontFamily || 'Arial',
             fill: element.color || '#000000',
-            textAlign: element.alignment || 'left',
+            textAlign: element.alignment || 'center',
             lockMovementX: element.locked,
             lockMovementY: element.locked,
             lockRotation: element.locked,
@@ -247,8 +249,10 @@ export default function CanvasEditor({
             scaleX: element.scaleX || 1,
             scaleY: element.scaleY || 1,
             opacity: element.opacity || 1,
-            width: canvasSize.width * 0.9, // 90% of canvas width
+            width: canvasSize.width * 0.8, // 80% of canvas width
             splitByGrapheme: false,
+            originX: 'center',
+            originY: 'center',
           })
           textObj.data = { elementId: element.id, locked: element.locked, zIndex: element.zIndex }
           canvas.add(textObj)
@@ -327,15 +331,16 @@ export default function CanvasEditor({
     }
   }, [selectedElementId])
 
-  // Auto-resize logic
+  // Auto-resize logic with zoom
   const containerRef = useRef<HTMLDivElement>(null)
   const [scale, setScale] = useState(1)
+  const [zoomLevel, setZoomLevel] = useState(1)
 
   useEffect(() => {
     const calculateScale = () => {
       if (!containerRef.current) return
       const container = containerRef.current
-      const padding = 32 // 2rem padding
+      const padding = 16 // Reduced padding
       const availableWidth = container.clientWidth - padding
       const availableHeight = container.clientHeight - padding
 
@@ -344,11 +349,9 @@ export default function CanvasEditor({
       const scaleX = availableWidth / canvasSize.width
       const scaleY = availableHeight / canvasSize.height
 
-      // Fit to screen, but don't upscale beyond 1.0 to avoid blurriness
-      // unless the user specifically wants to zoom (which we can add later)
-      // For now, just "fit"
-      const newScale = Math.min(scaleX, scaleY, 1)
-      setScale(newScale)
+      // Fit to screen base scale
+      const baseScale = Math.min(scaleX, scaleY, 1)
+      setScale(baseScale * zoomLevel)
     }
 
     const observer = new ResizeObserver(calculateScale)
@@ -360,13 +363,40 @@ export default function CanvasEditor({
     calculateScale()
 
     return () => observer.disconnect()
-  }, [canvasSize])
+  }, [canvasSize, zoomLevel])
+
+  // Handle mouse wheel zoom
+  useEffect(() => {
+    const handleWheel = (e: WheelEvent) => {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault()
+        const delta = e.deltaY > 0 ? -0.1 : 0.1
+        setZoomLevel(prev => Math.max(0.1, Math.min(prev + delta, 3)))
+      }
+    }
+
+    const container = containerRef.current
+    if (container) {
+      container.addEventListener('wheel', handleWheel, { passive: false })
+      return () => container.removeEventListener('wheel', handleWheel)
+    }
+  }, [])
 
   return (
     <div
       ref={containerRef}
-      className="flex items-center justify-center w-full h-full p-4 sm:p-8 overflow-hidden bg-gray-100/50 dark:bg-gray-900/50"
+      className="flex items-center justify-center w-full h-full p-2 overflow-hidden bg-gray-100/50 dark:bg-gray-900/50 relative"
     >
+      {/* Zoom indicator */}
+      <div className="absolute top-4 right-4 bg-white dark:bg-gray-800 px-3 py-2 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 z-10">
+        <div className="text-xs font-semibold text-gray-700 dark:text-gray-300">
+          Zoom: {Math.round(zoomLevel * 100)}%
+        </div>
+        <div className="text-[10px] text-gray-500 dark:text-gray-400 mt-0.5">
+          Ctrl + Scroll to zoom
+        </div>
+      </div>
+
       <div
         id="certificate-canvas-container"
         className="relative shadow-2xl border-2 border-gray-200 dark:border-gray-700 transition-transform duration-200 ease-out origin-center bg-white"
