@@ -39,11 +39,11 @@ export default function CanvasEditor({
     })
 
     fabricCanvasRef.current = canvas
-    
+
     // Store canvas instance on the canvas element for export access
     // @ts-ignore
     canvasRef.current.__fabricCanvas = canvas
-    
+
     setIsReady(true)
 
     // Handle object selection
@@ -97,7 +97,7 @@ export default function CanvasEditor({
     })
 
     canvas.on('text:changed', (e) => {
-      const obj = e.target as fabric.Text
+      const obj = e.target as fabric.Textbox
       if (!obj || !obj.data?.elementId) return
 
       const elementId = obj.data.elementId
@@ -115,13 +115,13 @@ export default function CanvasEditor({
     // Keyboard event for deleting objects
     const handleKeyDown = (e: KeyboardEvent) => {
       if (!canvas) return
-      
+
       const activeObject = canvas.getActiveObject()
       if (!activeObject) return
 
       if (e.key === 'Delete' || e.key === 'Backspace') {
         const target = e.target as HTMLElement
-        
+
         // Allow deletion if not typing in input
         if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') {
           return
@@ -134,7 +134,7 @@ export default function CanvasEditor({
         }
 
         e.preventDefault()
-        
+
         const elementId = activeObject.data?.elementId
         if (elementId) {
           canvas.remove(activeObject)
@@ -151,6 +151,7 @@ export default function CanvasEditor({
       canvas.dispose()
       fabricCanvasRef.current = null
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []) // Only initialize once
 
   // Update canvas size and background
@@ -200,9 +201,9 @@ export default function CanvasEditor({
       const existingObj = canvas.getObjects().find(obj => obj.data?.elementId === element.id)
 
       if (element.type === 'text') {
-        if (existingObj && existingObj.type === 'text') {
+        if (existingObj && existingObj.type === 'textbox') {
           // Update existing text object
-          const textObj = existingObj as fabric.Text
+          const textObj = existingObj as fabric.Textbox
           textObj.set({
             text: element.content,
             left: element.x,
@@ -222,11 +223,13 @@ export default function CanvasEditor({
             scaleX: element.scaleX || 1,
             scaleY: element.scaleY || 1,
             opacity: element.opacity || 1,
+            width: canvasSize.width * 0.9, // 90% of canvas width
+            splitByGrapheme: false,
           })
           textObj.data = { ...textObj.data, locked: element.locked, zIndex: element.zIndex }
         } else {
           // Create new text object
-          const textObj = new fabric.Text(element.content, {
+          const textObj = new fabric.Textbox(element.content, {
             left: element.x,
             top: element.y,
             fontSize: element.fontSize || 16,
@@ -244,6 +247,8 @@ export default function CanvasEditor({
             scaleX: element.scaleX || 1,
             scaleY: element.scaleY || 1,
             opacity: element.opacity || 1,
+            width: canvasSize.width * 0.9, // 90% of canvas width
+            splitByGrapheme: false,
           })
           textObj.data = { elementId: element.id, locked: element.locked, zIndex: element.zIndex }
           canvas.add(textObj)
@@ -297,7 +302,7 @@ export default function CanvasEditor({
       const bIndex = b.data?.zIndex || 0
       return aIndex - bIndex
     })
-    
+
     objects.forEach(obj => {
       canvas.bringToFront(obj)
     })
@@ -322,11 +327,57 @@ export default function CanvasEditor({
     }
   }, [selectedElementId])
 
+  // Auto-resize logic
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [scale, setScale] = useState(1)
+
+  useEffect(() => {
+    const calculateScale = () => {
+      if (!containerRef.current) return
+      const container = containerRef.current
+      const padding = 32 // 2rem padding
+      const availableWidth = container.clientWidth - padding
+      const availableHeight = container.clientHeight - padding
+
+      if (availableWidth <= 0 || availableHeight <= 0) return
+
+      const scaleX = availableWidth / canvasSize.width
+      const scaleY = availableHeight / canvasSize.height
+
+      // Fit to screen, but don't upscale beyond 1.0 to avoid blurriness
+      // unless the user specifically wants to zoom (which we can add later)
+      // For now, just "fit"
+      const newScale = Math.min(scaleX, scaleY, 1)
+      setScale(newScale)
+    }
+
+    const observer = new ResizeObserver(calculateScale)
+    if (containerRef.current) {
+      observer.observe(containerRef.current)
+    }
+
+    // Also recalculate when canvas size changes
+    calculateScale()
+
+    return () => observer.disconnect()
+  }, [canvasSize])
+
   return (
-    <div className="flex items-center justify-center min-h-full p-8">
-      <div id="certificate-canvas-container" className="relative shadow-2xl border-2 border-gray-200 dark:border-gray-700">
-        <canvas 
-          ref={canvasRef} 
+    <div
+      ref={containerRef}
+      className="flex items-center justify-center w-full h-full p-4 sm:p-8 overflow-hidden bg-gray-100/50 dark:bg-gray-900/50"
+    >
+      <div
+        id="certificate-canvas-container"
+        className="relative shadow-2xl border-2 border-gray-200 dark:border-gray-700 transition-transform duration-200 ease-out origin-center bg-white"
+        style={{
+          width: canvasSize.width,
+          height: canvasSize.height,
+          transform: `scale(${scale})`
+        }}
+      >
+        <canvas
+          ref={canvasRef}
           id="certificate-canvas"
         />
       </div>
