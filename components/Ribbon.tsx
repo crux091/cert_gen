@@ -29,6 +29,47 @@ const fontWeights = ['normal', 'bold', '300', '500', '600', '700', '800']
 const alignments: Array<'left' | 'center' | 'right'> = ['left', 'center', 'right']
 const STORAGE_KEY = 'certificate-saved-layouts'
 
+// --- Helper Components (Defined outside to prevent re-renders) ---
+
+const TabButton = ({ id, label, activeTab, setActiveTab }: { id: string, label: string, activeTab: string, setActiveTab: (id: string) => void }) => (
+  <button
+    onClick={() => setActiveTab(id)}
+    className={`px-3 sm:px-4 py-2 min-w-[60px] sm:min-w-[80px] text-xs sm:text-sm font-medium rounded-t-lg border-t border-x transition-all relative -mb-px flex items-center justify-center ${activeTab === id
+        ? 'bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-blue-600 dark:text-blue-400 border-b-transparent z-10'
+        : 'bg-transparent border-transparent text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-800 hover:text-gray-900 dark:hover:text-gray-200'
+      }`}
+  >
+    {label}
+  </button>
+)
+
+const Group = ({ label, children }: { label: string, children: React.ReactNode }) => (
+  <div className="flex flex-col h-full px-2 sm:px-3 border-r border-gray-200 dark:border-gray-700 last:border-0 min-w-max relative group/section">
+    <div className="flex-1 flex items-center gap-1 sm:gap-2 justify-center">
+      {children}
+    </div>
+    <div className="text-[9px] sm:text-[10px] text-center text-gray-500 dark:text-gray-400 font-medium uppercase tracking-wider mt-1 select-none group-hover/section:text-gray-800 dark:group-hover/section:text-gray-200 transition-colors">
+      {label}
+    </div>
+  </div>
+)
+
+const ActionButton = ({ onClick, icon: Icon, label, active = false, disabled = false, color = 'default' }: any) => (
+  <button
+    onClick={onClick}
+    disabled={disabled}
+    className={`flex flex-col items-center justify-center px-1.5 py-1.5 rounded-lg transition-all duration-200 gap-1 min-w-[50px] sm:min-w-[64px] max-w-[70px] sm:max-w-[80px] ${active
+        ? 'bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300 ring-1 ring-blue-200 dark:ring-blue-700 shadow-sm'
+        : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 hover:shadow-sm'
+      } ${disabled ? 'opacity-50 cursor-not-allowed grayscale' : 'active:scale-95 active:shadow-inner'} ${color === 'red' ? 'text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 hover:text-red-700 dark:hover:text-red-300' : ''
+      }`}
+    title={label}
+  >
+    <Icon className="w-4 h-4 sm:w-5 sm:h-5 transition-transform group-hover:scale-110" strokeWidth={1.5} />
+    <span className="text-[9px] sm:text-[10px] font-medium w-full text-center truncate px-0.5 leading-tight">{label}</span>
+  </button>
+)
+
 export default function Ribbon({
   elements,
   setElements,
@@ -177,7 +218,7 @@ export default function Ribbon({
     const reader = new FileReader()
     reader.onload = (event) => {
       const imageUrl = event.target?.result as string
-      
+
       // Load image to get dimensions and auto-resize canvas
       const img = new Image()
       img.onload = () => {
@@ -266,64 +307,20 @@ export default function Ribbon({
     }
   }
 
-  // --- Render Helpers ---
-
-  const TabButton = ({ id, label }: { id: string, label: string }) => (
-    <button
-      onClick={() => setActiveTab(id)}
-      className={`px-4 py-2 min-w-[80px] text-sm font-medium rounded-t-lg border-t border-x transition-all relative -mb-px flex items-center justify-center ${
-        activeTab === id
-          ? 'bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-blue-600 dark:text-blue-400 border-b-transparent z-10'
-          : 'bg-transparent border-transparent text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-800 hover:text-gray-900 dark:hover:text-gray-200'
-      }`}
-    >
-      {label}
-    </button>
-  )
-
-  const Group = ({ label, children }: { label: string, children: React.ReactNode }) => (
-    <div className="flex flex-col h-full px-4 border-r border-gray-200 dark:border-gray-700 last:border-0 min-w-max relative">
-      <div className="flex-1 flex items-center gap-3 justify-center">
-        {children}
-      </div>
-      <div className="text-[10px] text-center text-gray-500 dark:text-gray-400 font-medium uppercase tracking-wider mt-2 select-none">
-        {label}
-      </div>
-    </div>
-  )
-
-  const ActionButton = ({ onClick, icon: Icon, label, active = false, disabled = false, color = 'default' }: any) => (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      className={`flex flex-col items-center justify-center px-3 py-2 rounded-lg transition-all gap-1.5 min-w-[72px] ${
-        active
-          ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 ring-1 ring-blue-200 dark:ring-blue-700'
-          : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'
-      } ${disabled ? 'opacity-50 cursor-not-allowed' : 'active:scale-95'} ${
-        color === 'red' ? 'text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20' : ''
-      }`}
-      title={label}
-    >
-      <Icon className="w-5 h-5" strokeWidth={1.5} />
-      <span className="text-[11px] font-medium whitespace-nowrap">{label}</span>
-    </button>
-  )
-
   return (
     <div className="w-full flex flex-col bg-gray-50 dark:bg-gray-950 border-b border-gray-300 dark:border-gray-700 shadow-sm select-none">
       {/* Tabs Header */}
-      <div className="flex px-4 pt-2 border-b border-gray-300 dark:border-gray-700 bg-gray-100 dark:bg-gray-900 gap-0">
-        <TabButton id="home" label="Home" />
-        <TabButton id="insert" label="Insert" />
-        <TabButton id="design" label="Design" />
-        <TabButton id="layout" label="Layout" />
-        <TabButton id="import" label="Import" />
-        <TabButton id="export" label="Export" />
+      <div className="flex px-2 sm:px-4 pt-1 border-b border-gray-300 dark:border-gray-700 bg-gray-100 dark:bg-gray-900 gap-0">
+        <TabButton id="home" label="Home" activeTab={activeTab} setActiveTab={setActiveTab} />
+        <TabButton id="insert" label="Insert" activeTab={activeTab} setActiveTab={setActiveTab} />
+        <TabButton id="design" label="Design" activeTab={activeTab} setActiveTab={setActiveTab} />
+        <TabButton id="layout" label="Layout" activeTab={activeTab} setActiveTab={setActiveTab} />
+        <TabButton id="import" label="Import" activeTab={activeTab} setActiveTab={setActiveTab} />
+        <TabButton id="export" label="Export" activeTab={activeTab} setActiveTab={setActiveTab} />
       </div>
 
       {/* Ribbon Content Panel */}
-      <div className="h-36 bg-white dark:bg-gray-800 flex items-center px-4 py-3 overflow-x-auto custom-scrollbar shadow-inner">
+      <div className="h-24 sm:h-28 bg-white dark:bg-gray-800 flex items-stretch px-2 sm:px-4 py-1.5 sm:py-2 overflow-x-auto custom-scrollbar shadow-inner gap-0 sm:gap-2">
 
         {/* IMPORT TAB */}
         {activeTab === 'import' && (
@@ -332,11 +329,10 @@ export default function Ribbon({
               <div className="flex flex-col gap-2">
                 <button
                   onClick={() => setBackground({ type: 'color', color: background.color || '#ffffff' })}
-                  className={`flex items-center gap-2 px-4 py-2 text-xs font-medium rounded-md border transition-all ${
-                    background.type === 'color'
+                  className={`flex items-center gap-2 px-4 py-2 text-xs font-medium rounded-md border transition-all ${background.type === 'color'
                       ? 'bg-blue-50 dark:bg-blue-900/30 border-blue-500 dark:border-blue-600 text-blue-700 dark:text-blue-300 shadow-sm'
                       : 'bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600'
-                  }`}
+                    }`}
                 >
                   <Palette className="w-4 h-4" /> Color
                 </button>
@@ -345,11 +341,10 @@ export default function Ribbon({
                     if (background.type !== 'image') setBackground({ type: 'image' })
                     setTimeout(() => bgImageInputRef.current?.click(), 100)
                   }}
-                  className={`flex items-center gap-2 px-4 py-2 text-xs font-medium rounded-md border transition-all ${
-                    background.type === 'image'
+                  className={`flex items-center gap-2 px-4 py-2 text-xs font-medium rounded-md border transition-all ${background.type === 'image'
                       ? 'bg-blue-50 dark:bg-blue-900/30 border-blue-500 dark:border-blue-600 text-blue-700 dark:text-blue-300 shadow-sm'
                       : 'bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600'
-                  }`}
+                    }`}
                 >
                   <ImageIcon className="w-4 h-4" /> Template Image
                 </button>
@@ -469,7 +464,7 @@ export default function Ribbon({
                       <select
                         value={selectedElement.fontFamily}
                         onChange={(e) => updateElement({ fontFamily: e.target.value })}
-                        className="w-40 px-2 py-1.5 text-sm border rounded-md bg-white dark:bg-gray-700 dark:border-gray-600 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+                        className="w-32 sm:w-40 px-2 py-1.5 text-xs sm:text-sm border rounded-md bg-white dark:bg-gray-700 dark:border-gray-600 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
                       >
                         {fontFamilies.map(f => <option key={f} value={f}>{f}</option>)}
                       </select>
@@ -477,7 +472,7 @@ export default function Ribbon({
                         type="number"
                         value={selectedElement.fontSize}
                         onChange={(e) => updateElement({ fontSize: parseInt(e.target.value) || 16 })}
-                        className="w-16 px-2 py-1.5 text-sm border rounded-md bg-white dark:bg-gray-700 dark:border-gray-600 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+                        className="w-12 sm:w-16 px-2 py-1.5 text-xs sm:text-sm border rounded-md bg-white dark:bg-gray-700 dark:border-gray-600 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
                         title="Font Size"
                       />
                     </div>
@@ -485,10 +480,10 @@ export default function Ribbon({
                       <div className="flex bg-gray-100 dark:bg-gray-700 rounded-md p-1 border border-gray-200 dark:border-gray-600">
                         <button
                           onClick={() => updateElement({ fontWeight: selectedElement.fontWeight === 'bold' ? 'normal' : 'bold' })}
-                          className={`p-1.5 rounded transition-all w-8 h-8 flex items-center justify-center ${selectedElement.fontWeight === 'bold' ? 'bg-white dark:bg-gray-600 shadow-sm text-blue-600 dark:text-blue-400' : 'hover:bg-gray-200 dark:hover:bg-gray-600'}`}
+                          className={`p-1.5 rounded transition-all w-7 h-7 sm:w-8 sm:h-8 flex items-center justify-center ${selectedElement.fontWeight === 'bold' ? 'bg-white dark:bg-gray-600 shadow-sm text-blue-600 dark:text-blue-400' : 'hover:bg-gray-200 dark:hover:bg-gray-600'}`}
                           title="Bold"
                         >
-                          <span className="font-bold text-sm">B</span>
+                          <span className="font-bold text-xs sm:text-sm">B</span>
                         </button>
                       </div>
                       <div className="w-px h-6 bg-gray-300 dark:bg-gray-600" />
@@ -497,17 +492,17 @@ export default function Ribbon({
                           type="color"
                           value={selectedElement.color}
                           onChange={(e) => updateElement({ color: e.target.value })}
-                          className="w-6 h-6 rounded cursor-pointer border-none p-0 bg-transparent"
+                          className="w-5 h-5 sm:w-6 sm:h-6 rounded cursor-pointer border-none p-0 bg-transparent"
                           title="Text Color"
                         />
-                        <span className="text-xs font-mono text-gray-500">{selectedElement.color}</span>
+                        <span className="text-[10px] sm:text-xs font-mono text-gray-500">{selectedElement.color}</span>
                       </div>
                     </div>
                   </div>
                 </Group>
 
                 <Group label="Web Fonts">
-                  <div className="flex flex-col gap-2 w-64">
+                  <div className="flex flex-col gap-2 w-48 sm:w-64">
                     <input
                       type="text"
                       placeholder="Google Fonts URL"
@@ -529,7 +524,7 @@ export default function Ribbon({
                       <button
                         onClick={() => handleLoadFont(true)}
                         disabled={!customFontUrl || !customFontFamily}
-                        className="px-4 py-1.5 text-xs font-semibold bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-sm whitespace-nowrap"
+                        className="px-3 sm:px-4 py-1.5 text-xs font-semibold bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-sm whitespace-nowrap"
                       >
                         Load
                       </button>
@@ -543,11 +538,10 @@ export default function Ribbon({
                       <button
                         key={align}
                         onClick={() => updateElement({ alignment: align })}
-                        className={`p-2 rounded transition-all w-9 h-9 flex items-center justify-center ${
-                          selectedElement.alignment === align
+                        className={`p-2 rounded transition-all w-8 h-8 sm:w-9 sm:h-9 flex items-center justify-center ${selectedElement.alignment === align
                             ? 'bg-white dark:bg-gray-600 shadow-sm text-blue-600 dark:text-blue-400'
                             : 'hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-600 dark:text-gray-300'
-                        }`}
+                          }`}
                         title={`Align ${align}`}
                       >
                         {align === 'left' && <AlignLeft className="w-4 h-4" />}
@@ -565,23 +559,22 @@ export default function Ribbon({
                       title="Bring Forward"
                       className="p-1.5 hover:bg-gray-100 dark:hover:bg-gray-600 rounded transition-all bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 hover:shadow-sm flex justify-center"
                     >
-                      <ArrowUp className="w-4 h-4" />
+                      <ArrowUp className="w-3 h-3 sm:w-4 sm:h-4" />
                     </button>
                     <button
                       onClick={() => updateElement({ zIndex: Math.max(1, selectedElement.zIndex - 1) })}
                       title="Send Backward"
                       className="p-1.5 hover:bg-gray-100 dark:hover:bg-gray-600 rounded transition-all bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 hover:shadow-sm flex justify-center"
                     >
-                      <ArrowDown className="w-4 h-4" />
+                      <ArrowDown className="w-3 h-3 sm:w-4 sm:h-4" />
                     </button>
                     <button
                       onClick={() => updateElement({ locked: !selectedElement.locked })}
                       title={selectedElement.locked ? "Unlock" : "Lock"}
-                      className={`p-1.5 rounded transition-all border hover:shadow-sm col-span-2 flex justify-center items-center gap-1 text-[10px] font-medium ${
-                        selectedElement.locked 
-                          ? 'bg-red-50 border-red-200 text-red-600 dark:bg-red-900/20 dark:border-red-800 dark:text-red-400' 
+                      className={`p-1.5 rounded transition-all border hover:shadow-sm col-span-2 flex justify-center items-center gap-1 text-[10px] font-medium ${selectedElement.locked
+                          ? 'bg-red-50 border-red-200 text-red-600 dark:bg-red-900/20 dark:border-red-800 dark:text-red-400'
                           : 'bg-white border-gray-200 text-gray-700 dark:bg-gray-700 dark:border-gray-600 dark:text-gray-300 hover:bg-gray-50'
-                      }`}
+                        }`}
                     >
                       {selectedElement.locked ? <Lock className="w-3 h-3" /> : <Unlock className="w-3 h-3" />}
                       {selectedElement.locked ? "Locked" : "Lock"}
@@ -600,13 +593,22 @@ export default function Ribbon({
               icon={Type}
               label="Text Box"
               onClick={() => {
+                // Calculate proportional font size based on canvas dimensions
+                // Use 3% of canvas height as the base font size for better scaling
+                const baseFontSize = Math.round(canvasSize.height * 0.03)
+                const fontSize = Math.max(16, Math.min(baseFontSize, 72)) // Min 16px, max 72px
+                
+                // Position text in the center of the canvas
+                const centerX = Math.round(canvasSize.width / 2)
+                const centerY = Math.round(canvasSize.height / 2)
+                
                 const newElement: CertificateElement = {
                   id: Date.now().toString(),
                   type: 'text',
                   content: 'New Text',
-                  x: 100, y: 100,
-                  fontSize: 24, fontWeight: 'normal', fontFamily: 'Inter',
-                  color: '#000000', alignment: 'left',
+                  x: centerX, y: centerY,
+                  fontSize: fontSize, fontWeight: 'normal', fontFamily: 'Inter',
+                  color: '#000000', alignment: 'center',
                   locked: false, zIndex: elements.length + 1,
                 }
                 setElements(prev => [...prev, newElement])

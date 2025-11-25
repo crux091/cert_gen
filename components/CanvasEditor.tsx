@@ -39,11 +39,11 @@ export default function CanvasEditor({
     })
 
     fabricCanvasRef.current = canvas
-    
+
     // Store canvas instance on the canvas element for export access
     // @ts-ignore
     canvasRef.current.__fabricCanvas = canvas
-    
+
     setIsReady(true)
 
     // Handle object selection
@@ -90,15 +90,62 @@ export default function CanvasEditor({
 
     // Handle text editing
     canvas.on('text:editing:entered', (e) => {
-      const obj = e.target
+      const obj = e.target as fabric.Textbox
       if (obj && obj.data?.elementId) {
         setSelectedElementId(obj.data.elementId)
+        // Store original position and canvas dimensions
+        obj.data.originalLeft = obj.left
+        obj.data.originalTop = obj.top
+        // Lock canvas dimensions during editing
+        canvas.setDimensions({
+          width: canvasSize.width,
+          height: canvasSize.height,
+        })
+        // Ensure textbox width doesn't exceed canvas bounds
+        const maxWidth = canvasSize.width * 0.8
+        obj.set({ 
+          width: maxWidth,
+          splitByGrapheme: false,
+        })
+        canvas.renderAll()
+      }
+    })
+
+    canvas.on('text:editing:exited', (e) => {
+      const obj = e.target as fabric.Textbox
+      if (obj && obj.data?.elementId) {
+        // Restore position and lock the width after editing
+        const maxWidth = canvasSize.width * 0.8
+        obj.set({ 
+          width: maxWidth,
+          splitByGrapheme: false,
+          left: obj.data.originalLeft || obj.left,
+          top: obj.data.originalTop || obj.top,
+        })
+        // Ensure canvas dimensions remain fixed
+        canvas.setDimensions({
+          width: canvasSize.width,
+          height: canvasSize.height,
+        })
+        canvas.renderAll()
       }
     })
 
     canvas.on('text:changed', (e) => {
-      const obj = e.target as fabric.Text
+      const obj = e.target as fabric.Textbox
       if (!obj || !obj.data?.elementId) return
+
+      // Constrain width during typing
+      const maxWidth = canvasSize.width * 0.8
+      if (obj.width && obj.width !== maxWidth) {
+        obj.set({ width: maxWidth })
+      }
+
+      // Lock canvas dimensions during typing
+      canvas.setDimensions({
+        width: canvasSize.width,
+        height: canvasSize.height,
+      })
 
       const elementId = obj.data.elementId
       setElements(prev => prev.map(el => {
@@ -115,13 +162,13 @@ export default function CanvasEditor({
     // Keyboard event for deleting objects
     const handleKeyDown = (e: KeyboardEvent) => {
       if (!canvas) return
-      
+
       const activeObject = canvas.getActiveObject()
       if (!activeObject) return
 
       if (e.key === 'Delete' || e.key === 'Backspace') {
         const target = e.target as HTMLElement
-        
+
         // Allow deletion if not typing in input
         if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') {
           return
@@ -134,7 +181,7 @@ export default function CanvasEditor({
         }
 
         e.preventDefault()
-        
+
         const elementId = activeObject.data?.elementId
         if (elementId) {
           canvas.remove(activeObject)
@@ -151,6 +198,7 @@ export default function CanvasEditor({
       canvas.dispose()
       fabricCanvasRef.current = null
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []) // Only initialize once
 
   // Update canvas size and background
@@ -167,15 +215,50 @@ export default function CanvasEditor({
       canvas.setBackgroundColor(background.color || '#ffffff', () => {
         canvas.renderAll()
       })
+      canvas.setBackgroundImage(null as any, () => {
+        canvas.renderAll()
+      })
     } else if (background.type === 'image' && background.imageUrl) {
       fabric.Image.fromURL(background.imageUrl, (img) => {
-        img.scaleToWidth(canvasSize.width)
-        img.scaleToHeight(canvasSize.height)
+        // Scale to fit canvas exactly while maintaining aspect ratio
+        const scaleX = canvasSize.width / (img.width || 1)
+        const scaleY = canvasSize.height / (img.height || 1)
+        img.set({
+          scaleX: scaleX,
+          scaleY: scaleY,
+          left: 0,
+          top: 0,
+          originX: 'left',
+          originY: 'top',
+          selectable: false,
+          evented: false,
+          lockMovementX: true,
+          lockMovementY: true,
+          lockRotation: true,
+          lockScalingX: true,
+          lockScalingY: true,
+          hasControls: false,
+          hasBorders: false,
+          absolutePositioned: true,
+        })
         canvas.setBackgroundImage(img, () => {
           canvas.renderAll()
+        }, {
+          // Ensure background is clipped to canvas bounds
+          crossOrigin: 'anonymous',
         })
       }, { crossOrigin: 'anonymous' })
     }
+    
+    // Force canvas to not exceed its set dimensions
+    canvas.clipPath = new fabric.Rect({
+      left: 0,
+      top: 0,
+      width: canvasSize.width,
+      height: canvasSize.height,
+      absolutePositioned: true,
+    })
+    canvas.renderAll()
   }, [canvasSize, background])
 
   // Sync elements with Fabric.js objects
@@ -200,9 +283,9 @@ export default function CanvasEditor({
       const existingObj = canvas.getObjects().find(obj => obj.data?.elementId === element.id)
 
       if (element.type === 'text') {
-        if (existingObj && existingObj.type === 'text') {
+        if (existingObj && existingObj.type === 'textbox') {
           // Update existing text object
-          const textObj = existingObj as fabric.Text
+          const textObj = existingObj as fabric.Textbox
           textObj.set({
             text: element.content,
             left: element.x,
@@ -211,7 +294,7 @@ export default function CanvasEditor({
             fontWeight: element.fontWeight || 'normal',
             fontFamily: element.fontFamily || 'Arial',
             fill: element.color || '#000000',
-            textAlign: element.alignment || 'left',
+            textAlign: element.alignment || 'center',
             lockMovementX: element.locked,
             lockMovementY: element.locked,
             lockRotation: element.locked,
@@ -222,18 +305,30 @@ export default function CanvasEditor({
             scaleX: element.scaleX || 1,
             scaleY: element.scaleY || 1,
             opacity: element.opacity || 1,
+            width: canvasSize.width * 0.8, // 80% of canvas width
+            splitByGrapheme: false,
+            originX: 'left',
+            originY: 'top',
+            editable: false,
+            lockScalingFlip: true,
+            fixedWidth: canvasSize.width * 0.8,
+          })
+          // Prevent width from changing
+          textObj.setControlsVisibility({
+            ml: false, // middle left
+            mr: false, // middle right
           })
           textObj.data = { ...textObj.data, locked: element.locked, zIndex: element.zIndex }
         } else {
           // Create new text object
-          const textObj = new fabric.Text(element.content, {
+          const textObj = new fabric.Textbox(element.content, {
             left: element.x,
             top: element.y,
             fontSize: element.fontSize || 16,
             fontWeight: element.fontWeight || 'normal',
             fontFamily: element.fontFamily || 'Arial',
             fill: element.color || '#000000',
-            textAlign: element.alignment || 'left',
+            textAlign: element.alignment || 'center',
             lockMovementX: element.locked,
             lockMovementY: element.locked,
             lockRotation: element.locked,
@@ -244,6 +339,18 @@ export default function CanvasEditor({
             scaleX: element.scaleX || 1,
             scaleY: element.scaleY || 1,
             opacity: element.opacity || 1,
+            width: canvasSize.width * 0.8, // 80% of canvas width
+            splitByGrapheme: false,
+            originX: 'left',
+            originY: 'top',
+            editable: false,
+            lockScalingFlip: true,
+            fixedWidth: canvasSize.width * 0.8,
+          })
+          // Prevent width from changing
+          textObj.setControlsVisibility({
+            ml: false, // middle left
+            mr: false, // middle right
           })
           textObj.data = { elementId: element.id, locked: element.locked, zIndex: element.zIndex }
           canvas.add(textObj)
@@ -297,7 +404,7 @@ export default function CanvasEditor({
       const bIndex = b.data?.zIndex || 0
       return aIndex - bIndex
     })
-    
+
     objects.forEach(obj => {
       canvas.bringToFront(obj)
     })
@@ -322,11 +429,83 @@ export default function CanvasEditor({
     }
   }, [selectedElementId])
 
+  // Auto-resize logic with zoom
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [scale, setScale] = useState(1)
+  const [zoomLevel, setZoomLevel] = useState(1)
+
+  useEffect(() => {
+    const calculateScale = () => {
+      if (!containerRef.current) return
+      const container = containerRef.current
+      const padding = 16 // Reduced padding
+      const availableWidth = container.clientWidth - padding
+      const availableHeight = container.clientHeight - padding
+
+      if (availableWidth <= 0 || availableHeight <= 0) return
+
+      const scaleX = availableWidth / canvasSize.width
+      const scaleY = availableHeight / canvasSize.height
+
+      // Fit to screen base scale
+      const baseScale = Math.min(scaleX, scaleY, 1)
+      setScale(baseScale * zoomLevel)
+    }
+
+    const observer = new ResizeObserver(calculateScale)
+    if (containerRef.current) {
+      observer.observe(containerRef.current)
+    }
+
+    // Also recalculate when canvas size changes
+    calculateScale()
+
+    return () => observer.disconnect()
+  }, [canvasSize, zoomLevel])
+
+  // Handle mouse wheel zoom
+  useEffect(() => {
+    const handleWheel = (e: WheelEvent) => {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault()
+        const delta = e.deltaY > 0 ? -0.1 : 0.1
+        setZoomLevel(prev => Math.max(0.1, Math.min(prev + delta, 3)))
+      }
+    }
+
+    const container = containerRef.current
+    if (container) {
+      container.addEventListener('wheel', handleWheel, { passive: false })
+      return () => container.removeEventListener('wheel', handleWheel)
+    }
+  }, [])
+
   return (
-    <div className="flex items-center justify-center min-h-full p-8">
-      <div id="certificate-canvas-container" className="relative shadow-2xl border-2 border-gray-200 dark:border-gray-700">
-        <canvas 
-          ref={canvasRef} 
+    <div
+      ref={containerRef}
+      className="flex items-center justify-center w-full h-full p-2 overflow-hidden bg-gray-100/50 dark:bg-gray-900/50 relative"
+    >
+      {/* Zoom indicator */}
+      <div className="absolute top-4 right-4 bg-white dark:bg-gray-800 px-3 py-2 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 z-10">
+        <div className="text-xs font-semibold text-gray-700 dark:text-gray-300">
+          Zoom: {Math.round(zoomLevel * 100)}%
+        </div>
+        <div className="text-[10px] text-gray-500 dark:text-gray-400 mt-0.5">
+          Ctrl + Scroll to zoom
+        </div>
+      </div>
+
+      <div
+        id="certificate-canvas-container"
+        className="relative shadow-2xl border-2 border-gray-200 dark:border-gray-700 transition-transform duration-200 ease-out origin-center bg-white"
+        style={{
+          width: canvasSize.width,
+          height: canvasSize.height,
+          transform: `scale(${scale})`
+        }}
+      >
+        <canvas
+          ref={canvasRef}
           id="certificate-canvas"
         />
       </div>
