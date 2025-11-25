@@ -311,7 +311,6 @@ export default function CanvasEditor({
             originY: 'top',
             editable: false,
             lockScalingFlip: true,
-            fixedWidth: canvasSize.width * 0.8,
           })
           // Prevent width from changing
           textObj.setControlsVisibility({
@@ -345,7 +344,6 @@ export default function CanvasEditor({
             originY: 'top',
             editable: false,
             lockScalingFlip: true,
-            fixedWidth: canvasSize.width * 0.8,
           })
           // Prevent width from changing
           textObj.setControlsVisibility({
