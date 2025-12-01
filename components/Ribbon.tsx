@@ -12,6 +12,7 @@ import { CertificateElement, CanvasBackground, SavedLayout } from '@/types/certi
 import { exportToPNG, exportToPDF, bulkExportCertificates } from '@/lib/exportService'
 import { parseExcelFile, isValidExcelFile } from '@/lib/xlsx'
 import loadFont from '@/lib/fontLoader'
+import EmailSender from './EmailSender'
 
 interface RibbonProps {
   elements: CertificateElement[]
@@ -88,6 +89,17 @@ export default function Ribbon({
   const [nameElementId, setNameElementId] = useState<string>('')
   const [bulkProgress, setBulkProgress] = useState({ current: 0, total: 0 })
   const excelInputRef = useRef<HTMLInputElement>(null)
+
+  // Canvas Element Ref for EmailSender
+  const [canvasElement, setCanvasElement] = useState<HTMLElement | null>(null)
+  
+  // Find canvas element
+  useEffect(() => {
+    const canvas = document.getElementById('certificate-canvas-container')
+    if (canvas) {
+      setCanvasElement(canvas)
+    }
+  }, [])
 
   // Background State
   const bgImageInputRef = useRef<HTMLInputElement>(null)
@@ -750,6 +762,16 @@ export default function Ribbon({
                 onClick={handleBulkExport}
                 disabled={isExporting || bulkNames.length === 0 || !nameElementId}
               />
+            </Group>
+
+            <Group label="Email">
+              <div className="flex items-center px-2">
+                <EmailSender
+                  elements={elements}
+                  setElements={setElements}
+                  canvasElement={canvasElement}
+                />
+              </div>
             </Group>
           </>
         )}
