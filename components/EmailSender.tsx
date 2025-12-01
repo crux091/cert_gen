@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useRef } from 'react'
-import { Mail, Upload, Table, Send, X, Download, CheckCircle } from 'lucide-react'
+import { Mail, Upload, Table, Send, X, Download, CheckCircle, Bold, Image } from 'lucide-react'
 import {
   readRecipientsFromExcel,
   prepareEmailsWithCertificates,
@@ -41,6 +41,8 @@ export default function EmailSender({
   const [success, setSuccess] = useState<boolean>(false)
 
   const recipientsInputRef = useRef<HTMLInputElement>(null)
+  const emailBodyRef = useRef<HTMLDivElement>(null)
+  const imageInputRef = useRef<HTMLInputElement>(null)
 
   // Get text elements for name field selection
   const textElements = elements.filter(el => el.type === 'text')
@@ -52,6 +54,120 @@ export default function EmailSender({
     }
     setError(null)
     setStep('certificates')
+  }
+
+  const insertBoldText = () => {
+    const editor = emailBodyRef.current
+    if (!editor) return
+    
+    editor.focus()
+    document.execCommand('bold', false)
+  }
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.ctrlKey && e.key === 'b') {
+      e.preventDefault()
+      insertBoldText()
+    }
+  }
+
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    if (!file.type.startsWith('image/')) {
+      setError('Please select a valid image file')
+      return
+    }
+
+    const reader = new FileReader()
+    reader.onload = (event) => {
+      const base64 = event.target?.result as string
+      
+      const editor = emailBodyRef.current
+      if (!editor) return
+
+      editor.focus()
+      
+      // Create image wrapper with resize handles
+      const wrapper = document.createElement('span')
+      wrapper.contentEditable = 'false'
+      wrapper.style.display = 'inline-block'
+      wrapper.style.position = 'relative'
+      wrapper.style.maxWidth = '100%'
+      wrapper.style.cursor = 'default'
+      
+      const img = document.createElement('img')
+      img.src = base64
+      img.alt = 'Image'
+      img.style.width = '300px'
+      img.style.height = 'auto'
+      img.style.display = 'block'
+      img.style.cursor = 'nwse-resize'
+      img.draggable = false
+      
+      // Add resize functionality
+      let isResizing = false
+      let startX = 0
+      let startWidth = 0
+      
+      img.addEventListener('mousedown', (e) => {
+        e.preventDefault()
+        isResizing = true
+        startX = e.clientX
+        startWidth = img.offsetWidth
+        
+        const handleMouseMove = (e: MouseEvent) => {
+          if (!isResizing) return
+          const deltaX = e.clientX - startX
+          const newWidth = Math.max(50, Math.min(800, startWidth + deltaX))
+          img.style.width = newWidth + 'px'
+        }
+        
+        const handleMouseUp = () => {
+          isResizing = false
+          document.removeEventListener('mousemove', handleMouseMove)
+          document.removeEventListener('mouseup', handleMouseUp)
+          // Update state after resize
+          if (editor) {
+            setEmailBody(editor.innerHTML)
+          }
+        }
+        
+        document.addEventListener('mousemove', handleMouseMove)
+        document.addEventListener('mouseup', handleMouseUp)
+      })
+      
+      wrapper.appendChild(img)
+      
+      // Insert at cursor position
+      const selection = window.getSelection()
+      if (selection && selection.rangeCount > 0) {
+        const range = selection.getRangeAt(0)
+        range.deleteContents()
+        range.insertNode(wrapper)
+        
+        // Move cursor after image
+        range.setStartAfter(wrapper)
+        range.setEndAfter(wrapper)
+        selection.removeAllRanges()
+        selection.addRange(range)
+      } else {
+        editor.appendChild(wrapper)
+      }
+      
+      // Update state
+      setEmailBody(editor.innerHTML)
+      setError(null)
+    }
+    reader.onerror = () => {
+      setError('Failed to read image file')
+    }
+    reader.readAsDataURL(file)
+
+    if (imageInputRef.current) {
+      imageInputRef.current.value = ''
+    }
   }
 
   const handleRecipientsFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -227,14 +343,65 @@ export default function EmailSender({
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                   Email Content <span className="text-red-500">*</span>
                 </label>
-                <textarea
-                  value={emailBody}
-                  onChange={(e) => setEmailBody(e.target.value)}
-                  placeholder="Enter your email message here...&#10;&#10;Example:&#10;Dear [Name],&#10;&#10;Congratulations on your achievement! Please find your certificate attached.&#10;&#10;Best regards"
-                  className="w-full h-64 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white resize-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+                
+                {/* Formatting Toolbar */}
+                <div className="flex gap-2 mb-2 p-2 bg-gray-50 dark:bg-gray-700 rounded-t-lg border border-b-0 border-gray-300 dark:border-gray-600">
+                  <button
+                    type="button"
+                    onClick={insertBoldText}
+                    className="flex items-center gap-1 px-3 py-1.5 bg-white dark:bg-gray-600 border border-gray-300 dark:border-gray-500 rounded hover:bg-gray-100 dark:hover:bg-gray-500 transition-colors text-gray-700 dark:text-gray-200"
+                    title="Bold text (select text first)"
+                  >
+                    <Bold size={16} />
+                    <span className="text-sm">Bold</span>
+                  </button>
+                  
+                  <button
+                    type="button"
+                    onClick={() => imageInputRef.current?.click()}
+                    className="flex items-center gap-1 px-3 py-1.5 bg-white dark:bg-gray-600 border border-gray-300 dark:border-gray-500 rounded hover:bg-gray-100 dark:hover:bg-gray-500 transition-colors text-gray-700 dark:text-gray-200"
+                    title="Insert image"
+                  >
+                    <Image size={16} />
+                    <span className="text-sm">Image</span>
+                  </button>
+                  
+                  <input
+                    ref={imageInputRef}
+                    type="file"
+                    accept="image/*"
+                    onChange={handleImageUpload}
+                    className="hidden"
+                  />
+                </div>
+
+                <div
+                  ref={emailBodyRef}
+                  contentEditable
+                  onInput={(e) => setEmailBody(e.currentTarget.innerHTML)}
+                  onKeyDown={handleKeyDown}
+                  className="w-full min-h-64 px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-b-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white overflow-auto focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+                  data-placeholder="Enter your email message here...
+
+Example:
+Dear Recipient,
+
+Congratulations on your achievement! Please find your certificate attached.
+
+Best regards"
+                  style={{
+                    minHeight: '16rem'
+                  }}
                 />
+                <style jsx>{`
+                  [contenteditable][data-placeholder]:empty:before {
+                    content: attr(data-placeholder);
+                    color: #9ca3af;
+                    white-space: pre-wrap;
+                  }
+                `}</style>
                 <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                  You can use plain text or HTML formatting
+                  Select text and click Bold or press <kbd className="px-1 py-0.5 bg-gray-200 dark:bg-gray-600 rounded text-xs">Ctrl+B</kbd> to format. Click and drag images to resize them.
                 </p>
               </div>
 
