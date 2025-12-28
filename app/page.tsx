@@ -4,7 +4,7 @@ import { useState } from 'react'
 import Header from '@/components/Header'
 import Ribbon from '@/components/Ribbon'
 import CanvasEditor from '@/components/CanvasEditor'
-import { CertificateElement, CanvasBackground } from '@/types/certificate'
+import { CertificateElement, CanvasBackground, CSVData, VariableBindings } from '@/types/certificate'
 
 export default function Home() {
   const [background, setBackground] = useState<CanvasBackground>({
@@ -14,6 +14,8 @@ export default function Home() {
   const [elements, setElements] = useState<CertificateElement[]>([])
   const [selectedElementId, setSelectedElementId] = useState<string | null>(null)
   const [canvasSize, setCanvasSize] = useState({ width: 800, height: 600 })
+  const [csvData, setCsvData] = useState<CSVData | null>(null)
+  const [variableBindings, setVariableBindings] = useState<VariableBindings>({})
 
   return (
     <div className="h-screen bg-gray-100 dark:bg-gray-900 transition-colors flex flex-col overflow-hidden">
@@ -29,6 +31,10 @@ export default function Home() {
           setCanvasSize={setCanvasSize}
           background={background}
           setBackground={setBackground}
+          csvData={csvData}
+          setCsvData={setCsvData}
+          variableBindings={variableBindings}
+          setVariableBindings={setVariableBindings}
         />
       </div>
       
