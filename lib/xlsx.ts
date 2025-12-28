@@ -1,4 +1,5 @@
 import * as XLSX from 'xlsx'
+import { CSVData } from '@/types/certificate'
 
 export interface ExcelData {
   names: string[]
@@ -51,6 +52,61 @@ export async function parseExcelFile(
         }
 
         resolve({ names, headers })
+      } catch (error) {
+        reject(error)
+      }
+    }
+
+    reader.onerror = () => {
+      reject(new Error('Failed to read file'))
+    }
+
+    reader.readAsBinaryString(file)
+  })
+}
+
+/**
+ * Parse Excel/CSV file and return full dataset with headers and rows
+ * @param file - The Excel or CSV file to parse
+ * @returns Object containing headers and rows as key-value objects
+ */
+export async function parseExcelFileToDataset(file: File): Promise<CSVData> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+
+    reader.onload = (e) => {
+      try {
+        const data = e.target?.result
+        const workbook = XLSX.read(data, { type: 'binary' })
+        
+        // Get the first worksheet
+        const firstSheetName = workbook.SheetNames[0]
+        const worksheet = workbook.Sheets[firstSheetName]
+        
+        // Convert to JSON with first row as headers
+        const jsonData: any[] = XLSX.utils.sheet_to_json(worksheet, { 
+          defval: '', // Default value for empty cells
+          raw: false // Convert all values to strings
+        })
+        
+        if (jsonData.length === 0) {
+          reject(new Error('Excel file is empty or has no data rows'))
+          return
+        }
+
+        // Extract headers from first object's keys
+        const headers = Object.keys(jsonData[0])
+        
+        // Convert to array of row objects
+        const rows = jsonData.map(row => {
+          const rowObj: Record<string, any> = {}
+          headers.forEach(header => {
+            rowObj[header] = row[header] ?? ''
+          })
+          return rowObj
+        })
+
+        resolve({ headers, rows })
       } catch (error) {
         reject(error)
       }

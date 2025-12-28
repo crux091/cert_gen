@@ -17,6 +17,7 @@ export interface CertificateElement {
   scaleX?: number // Horizontal scale
   scaleY?: number // Vertical scale
   opacity?: number // 0-1
+  hasVariables?: boolean // Indicates if element contains bracketed variables
 }
 
 export interface CanvasBackground {
@@ -43,4 +44,13 @@ export interface ExportOptions {
 export interface BulkExportData {
   names: string[]
   nameElementId: string
+}
+
+export interface CSVData {
+  headers: string[]
+  rows: Record<string, any>[]
+}
+
+export interface VariableBindings {
+  [variableName: string]: string // Maps variable name to CSV column name
 }

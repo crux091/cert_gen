@@ -4,6 +4,7 @@ import { useRef, useEffect, useState } from 'react'
 import { fabric } from 'fabric'
 import { CertificateElement, CanvasBackground } from '@/types/certificate'
 import { Dispatch, SetStateAction } from 'react'
+import { hasVariables } from '@/lib/variableParser'
 
 interface CanvasEditorProps {
   elements: CertificateElement[]
@@ -148,11 +149,14 @@ export default function CanvasEditor({
       })
 
       const elementId = obj.data.elementId
+      const textContent = obj.text || ''
+      
       setElements(prev => prev.map(el => {
         if (el.id === elementId) {
           return {
             ...el,
-            content: obj.text || '',
+            content: textContent,
+            hasVariables: hasVariables(textContent),
           }
         }
         return el
@@ -200,6 +204,138 @@ export default function CanvasEditor({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []) // Only initialize once
+
+  // Handle paste events for creating new text boxes with formatting
+  useEffect(() => {
+    const canvas = fabricCanvasRef.current
+    if (!canvas) return
+
+    const handlePaste = (e: ClipboardEvent) => {
+      // Check if we're editing text or if target is input/textarea
+      const activeObject = canvas.getActiveObject()
+      if (activeObject && (activeObject as any).isEditing) {
+        return // Let Fabric.js handle paste during text editing
+      }
+
+      const target = e.target as HTMLElement
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') {
+        return // Let native paste work in inputs
+      }
+
+      // Get clipboard data
+      const clipboardData = e.clipboardData
+      if (!clipboardData) return
+
+      const htmlData = clipboardData.getData('text/html')
+      const plainText = clipboardData.getData('text/plain')
+
+      if (!plainText) return
+
+      e.preventDefault()
+
+      // Parse HTML formatting if available
+      let formatting = {
+        fontFamily: 'Arial',
+        fontSize: 16,
+        fontWeight: 'normal',
+        textAlign: 'left' as 'left' | 'center' | 'right',
+        color: '#000000'
+      }
+
+      if (htmlData) {
+        const parser = new DOMParser()
+        const doc = parser.parseFromString(htmlData, 'text/html')
+        const body = doc.body
+
+        // Extract inline styles or computed styles
+        const firstElement = body.querySelector('p, span, div, td, th, li, h1, h2, h3, h4, h5, h6')
+        if (firstElement) {
+          const style = (firstElement as HTMLElement).style
+          const computedStyle = window.getComputedStyle(firstElement)
+
+          // Font family
+          const fontFamily = style.fontFamily || computedStyle.fontFamily
+          if (fontFamily && fontFamily !== 'initial') {
+            formatting.fontFamily = fontFamily.split(',')[0].replace(/['"]/g, '').trim()
+          }
+
+          // Font size
+          const fontSize = style.fontSize || computedStyle.fontSize
+          if (fontSize) {
+            const sizeMatch = fontSize.match(/(\d+(?:\.\d+)?)(px|pt)?/)
+            if (sizeMatch) {
+              let size = parseFloat(sizeMatch[1])
+              const unit = sizeMatch[2]
+              // Convert pt to px (1pt = 1.333px approximately)
+              if (unit === 'pt') {
+                size = size * 1.333
+              }
+              formatting.fontSize = Math.round(size)
+            }
+          }
+
+          // Font weight
+          const fontWeight = style.fontWeight || computedStyle.fontWeight
+          if (fontWeight) {
+            const numWeight = parseInt(fontWeight)
+            if (!isNaN(numWeight) && numWeight >= 600) {
+              formatting.fontWeight = 'bold'
+            } else if (fontWeight === 'bold') {
+              formatting.fontWeight = 'bold'
+            }
+          }
+
+          // Check for bold tag
+          if (body.querySelector('b, strong')) {
+            formatting.fontWeight = 'bold'
+          }
+
+          // Text align
+          const textAlign = style.textAlign || computedStyle.textAlign
+          if (textAlign && ['left', 'center', 'right'].includes(textAlign)) {
+            formatting.textAlign = textAlign as 'left' | 'center' | 'right'
+          }
+
+          // Color
+          const color = style.color || computedStyle.color
+          if (color && color !== 'initial') {
+            // Convert rgb/rgba to hex
+            const rgbMatch = color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/)
+            if (rgbMatch) {
+              const r = parseInt(rgbMatch[1])
+              const g = parseInt(rgbMatch[2])
+              const b = parseInt(rgbMatch[3])
+              formatting.color = `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`
+            }
+          }
+        }
+      }
+
+      // Create new text element
+      const newElement: CertificateElement = {
+        id: `element-${Date.now()}`,
+        type: 'text',
+        content: plainText,
+        x: canvasSize.width / 2,
+        y: canvasSize.height / 2,
+        fontSize: formatting.fontSize,
+        fontWeight: formatting.fontWeight,
+        fontFamily: formatting.fontFamily,
+        color: formatting.color,
+        alignment: formatting.textAlign,
+        locked: false,
+        zIndex: elements.length,
+      }
+
+      setElements(prev => [...prev, newElement])
+    }
+
+    document.addEventListener('paste', handlePaste)
+
+    return () => {
+      document.removeEventListener('paste', handlePaste)
+    }
+  }, [canvasSize, elements.length, setElements])
 
   // Update canvas size and background
   useEffect(() => {
@@ -309,7 +445,7 @@ export default function CanvasEditor({
             splitByGrapheme: false,
             originX: 'left',
             originY: 'top',
-            editable: false,
+            editable: true,
             lockScalingFlip: true,
           })
           // Prevent width from changing
@@ -342,7 +478,7 @@ export default function CanvasEditor({
             splitByGrapheme: false,
             originX: 'left',
             originY: 'top',
-            editable: false,
+            editable: true,
             lockScalingFlip: true,
           })
           // Prevent width from changing
