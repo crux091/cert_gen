@@ -6,7 +6,7 @@ import {
   Trash2, Save, FolderOpen, Upload, Palette,
   AlignLeft, AlignCenter, AlignRight,
   Lock, Unlock, Copy, ArrowUp, ArrowDown, FileText, Loader2, X,
-  MousePointer2, Grid, Link2
+  MousePointer2, Grid, Link2, Info
 } from 'lucide-react'
 import { CertificateElement, CanvasBackground, SavedLayout, CSVData, VariableBindings } from '@/types/certificate'
 import { exportToPNG, exportToPDF, bulkExportCertificates } from '@/lib/exportService'
@@ -845,41 +845,28 @@ export default function Ribbon({
               )}
             </Group>
 
+            {/* Variable bindings are now done by clicking on text with [variables] directly on the canvas */}
+            
             {csvData && (() => {
               const textContents = elements.filter(el => el.type === 'text').map(el => el.content)
               const detectedVariables = getAllUniqueVariables(textContents)
+              // With the new approach, variables are "bound" if they match a column name
+              const unboundVars = detectedVariables.filter(v => !csvData.headers.includes(v))
               
               return detectedVariables.length > 0 && (
-                <Group label="Variable Bindings">
-                  <div className="flex flex-col gap-2 p-2 bg-white dark:bg-gray-700 rounded-md border border-gray-200 dark:border-gray-600 max-w-md max-h-20 overflow-y-auto">
-                    {detectedVariables.map(varName => (
-                      <div key={varName} className="flex items-center gap-2">
-                        <div className="flex items-center gap-1 min-w-[80px]">
-                          <Link2 className="w-3 h-3 text-gray-400" />
-                          <span className="text-xs font-mono text-gray-700 dark:text-gray-300">[{varName}]</span>
-                        </div>
-                        <select
-                          value={variableBindings[varName] || ''}
-                          onChange={(e) => setVariableBindings(prev => ({
-                            ...prev,
-                            [varName]: e.target.value
-                          }))}
-                          className={`flex-1 px-2 py-1 text-xs border rounded-md bg-white dark:bg-gray-800 dark:border-gray-600 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none ${
-                            variableBindings[varName] 
-                              ? 'border-green-500 dark:border-green-600' 
-                              : 'border-yellow-500 dark:border-yellow-600'
-                          }`}
-                        >
-                          <option value="">Select column...</option>
-                          {csvData.headers.map(header => (
-                            <option key={header} value={header}>{header}</option>
-                          ))}
-                        </select>
-                        {variableBindings[varName] && (
-                          <span className="text-green-600 dark:text-green-400 text-xs">✓</span>
-                        )}
-                      </div>
-                    ))}
+                <Group label="Variables">
+                  <div className="flex flex-col gap-1 px-2 py-1.5 bg-gray-50 dark:bg-gray-800 rounded-md border border-gray-200 dark:border-gray-700">
+                    <div className="flex items-center gap-1.5">
+                      <Info className="w-3 h-3 text-blue-500" />
+                      <span className="text-[10px] text-gray-500 dark:text-gray-400">
+                        Click variables on canvas to bind
+                      </span>
+                    </div>
+                    <span className={`text-xs font-medium ${unboundVars.length > 0 ? 'text-yellow-600 dark:text-yellow-400' : 'text-green-600 dark:text-green-400'}`}>
+                      {unboundVars.length > 0 
+                        ? `⚠ ${unboundVars.length} unbound: ${unboundVars.slice(0, 3).map(v => `[${v}]`).join(', ')}${unboundVars.length > 3 ? '...' : ''}`
+                        : '✓ All variables bound'}
+                    </span>
                   </div>
                 </Group>
               )
@@ -888,7 +875,8 @@ export default function Ribbon({
             {csvData && (() => {
               const textContents = elements.filter(el => el.type === 'text').map(el => el.content)
               const detectedVariables = getAllUniqueVariables(textContents)
-              const unboundVars = detectedVariables.filter(v => !variableBindings[v])
+              // Variables are bound if they match a column name
+              const unboundVars = detectedVariables.filter(v => !csvData.headers.includes(v))
               const canExport = detectedVariables.length > 0 && unboundVars.length === 0
               
               return detectedVariables.length > 0 && (

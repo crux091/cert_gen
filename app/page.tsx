@@ -46,6 +46,9 @@ export default function Home() {
           setSelectedElementId={setSelectedElementId}
           canvasSize={canvasSize}
           background={background}
+          csvData={csvData}
+          variableBindings={variableBindings}
+          setVariableBindings={setVariableBindings}
         />
       </main>
     </div>
