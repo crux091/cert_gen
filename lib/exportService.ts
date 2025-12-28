@@ -3,7 +3,7 @@ import jsPDF from 'jspdf'
 import JSZip from 'jszip'
 import { saveAs } from 'file-saver'
 import { CertificateElement, ExportOptions, CSVData, VariableBindings } from '@/types/certificate'
-import { replaceAllVariables, getUnboundVariables } from './variableParser'
+import { replaceAllVariables, getAllUniqueVariables } from './variableParser'
 
 /**
  * Sanitize filename by replacing invalid characters
@@ -446,17 +446,30 @@ export async function bulkExportWithVariables(
     throw new Error('Fabric.js canvas not found')
   }
 
-  // Validate bindings
+  // Get all variables from text elements
   const textElements = elements.filter(el => el.type === 'text')
   const allTextContent = textElements.map(el => el.content).join(' ')
-  const unboundVars = getUnboundVariables(allTextContent, variableBindings)
+  const allVariables = getAllUniqueVariables([allTextContent])
+  
+  // Auto-build bindings: variable name → column name (they're the same with new approach)
+  // Variables are now directly named after columns (e.g., [Name] maps to "Name" column)
+  const effectiveBindings: VariableBindings = {}
+  const unboundVars: string[] = []
+  
+  for (const varName of allVariables) {
+    if (csvData.headers.includes(varName)) {
+      effectiveBindings[varName] = varName // Variable name equals column name
+    } else {
+      unboundVars.push(varName)
+    }
+  }
   
   if (unboundVars.length > 0) {
-    throw new Error(`Unbound variables detected: ${unboundVars.map(v => `[${v}]`).join(', ')}. Please bind all variables before exporting.`)
+    throw new Error(`Unbound variables detected: ${unboundVars.map(v => `[${v}]`).join(', ')}. Click on variables in the canvas to bind them to columns.`)
   }
 
   // Check for mixed data types in bound columns
-  const boundColumns = Object.values(variableBindings)
+  const boundColumns = Object.values(effectiveBindings)
   for (const column of boundColumns) {
     const values = csvData.rows.map(row => row[column])
     const hasImages = values.some(v => isImageURL(String(v)))
@@ -472,7 +485,7 @@ export async function bulkExportWithVariables(
       const row = csvData.rows[rowIndex]
       
       // Validate row data - check for missing required values
-      for (const [varName, columnName] of Object.entries(variableBindings)) {
+      for (const [varName, columnName] of Object.entries(effectiveBindings)) {
         const value = row[columnName]
         if (value === undefined || value === null || String(value).trim() === '') {
           throw new Error(`Export failed: Missing data in column "${columnName}" for row ${rowIndex + 1}`)
@@ -481,7 +494,7 @@ export async function bulkExportWithVariables(
 
       // Create row-specific bindings (variable name -> actual value)
       const rowBindings: Record<string, string> = {}
-      Object.entries(variableBindings).forEach(([varName, columnName]) => {
+      Object.entries(effectiveBindings).forEach(([varName, columnName]) => {
         rowBindings[varName] = String(row[columnName])
       })
 
@@ -501,7 +514,7 @@ export async function bulkExportWithVariables(
 
       // Handle image replacements (if any variables are bound to image columns)
       const fabricObjects = fabricCanvas.getObjects()
-      for (const [varName, columnName] of Object.entries(variableBindings)) {
+      for (const [varName, columnName] of Object.entries(effectiveBindings)) {
         const value = row[columnName]
         if (isImageURL(String(value))) {
           // Find textbox containing this variable and replace with image
@@ -535,7 +548,7 @@ export async function bulkExportWithVariables(
       const blob = await generateCertificateBlob(canvasElement, format)
       
       // Generate filename from first bound variable or row number
-      const firstVarName = Object.keys(variableBindings)[0]
+      const firstVarName = Object.keys(effectiveBindings)[0]
       const firstValue = firstVarName ? rowBindings[firstVarName] : `Row ${rowIndex + 1}`
       const filename = sanitizeFilename(`Certificate - ${firstValue}${extension}`)
       zip.file(filename, blob)

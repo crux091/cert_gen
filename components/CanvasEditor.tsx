@@ -2,9 +2,33 @@
 
 import { useRef, useEffect, useState } from 'react'
 import { fabric } from 'fabric'
-import { CertificateElement, CanvasBackground } from '@/types/certificate'
+import { CertificateElement, CanvasBackground, CSVData, VariableBindings } from '@/types/certificate'
 import { Dispatch, SetStateAction } from 'react'
-import { hasVariables } from '@/lib/variableParser'
+import { hasVariables, extractVariables } from '@/lib/variableParser'
+
+// Generate consistent colors for variable names (like syntax highlighting)
+const VARIABLE_COLORS = [
+  '#e91e63', // pink
+  '#9c27b0', // purple
+  '#673ab7', // deep purple
+  '#3f51b5', // indigo
+  '#2196f3', // blue
+  '#00bcd4', // cyan
+  '#009688', // teal
+  '#4caf50', // green
+  '#ff9800', // orange
+  '#ff5722', // deep orange
+]
+
+function getVariableColor(variableName: string): string {
+  // Generate a consistent hash from the variable name
+  let hash = 0
+  for (let i = 0; i < variableName.length; i++) {
+    hash = ((hash << 5) - hash) + variableName.charCodeAt(i)
+    hash = hash & hash // Convert to 32bit integer
+  }
+  return VARIABLE_COLORS[Math.abs(hash) % VARIABLE_COLORS.length]
+}
 
 interface CanvasEditorProps {
   elements: CertificateElement[]
@@ -13,6 +37,9 @@ interface CanvasEditorProps {
   setSelectedElementId: Dispatch<SetStateAction<string | null>>
   canvasSize: { width: number; height: number }
   background: CanvasBackground
+  csvData: CSVData | null
+  variableBindings: VariableBindings
+  setVariableBindings: Dispatch<SetStateAction<VariableBindings>>
 }
 
 export default function CanvasEditor({
@@ -22,10 +49,23 @@ export default function CanvasEditor({
   setSelectedElementId,
   canvasSize,
   background,
+  csvData,
+  variableBindings,
+  setVariableBindings,
 }: CanvasEditorProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const fabricCanvasRef = useRef<fabric.Canvas | null>(null)
   const [isReady, setIsReady] = useState(false)
+  
+  // Variable binding popup state
+  const [bindingPopup, setBindingPopup] = useState<{
+    visible: boolean
+    x: number
+    y: number
+    variableName: string
+    fullMatch: string  // The full [variable] text to replace
+    elementId: string
+  } | null>(null)
 
   // Initialize Fabric.js canvas
   useEffect(() => {
@@ -64,6 +104,7 @@ export default function CanvasEditor({
 
     canvas.on('selection:cleared', () => {
       setSelectedElementId(null)
+      setBindingPopup(null)
     })
 
     // Handle object modifications
@@ -163,6 +204,55 @@ export default function CanvasEditor({
       }))
     })
 
+    // Apply variable highlighting when exiting text edit mode
+    canvas.on('text:editing:exited', (e) => {
+      const obj = e.target as fabric.Textbox
+      if (!obj) return
+      
+      // Apply syntax highlighting after editing is done
+      const text = obj.text || ''
+      const variables = extractVariables(text)
+      
+      if (variables.length === 0) {
+        obj.styles = {}
+      } else {
+        // Build styles object for Fabric.js
+        const lines = text.split('\n')
+        const newStyles: Record<number, Record<number, any>> = {}
+        
+        let globalCharIndex = 0
+        lines.forEach((line, lineIndex) => {
+          const lineStart = globalCharIndex
+          const lineEnd = lineStart + line.length
+          
+          variables.forEach(v => {
+            if (v.startIndex >= lineStart && v.startIndex < lineEnd) {
+              const localStart = v.startIndex - lineStart
+              const localEnd = Math.min(v.endIndex - lineStart, line.length)
+              
+              if (!newStyles[lineIndex]) {
+                newStyles[lineIndex] = {}
+              }
+              
+              const color = getVariableColor(v.name)
+              
+              for (let i = localStart; i < localEnd; i++) {
+                newStyles[lineIndex][i] = {
+                  fill: color,
+                  fontWeight: 'bold',
+                }
+              }
+            }
+          })
+          
+          globalCharIndex = lineEnd + 1
+        })
+        
+        obj.styles = newStyles
+      }
+      canvas.renderAll()
+    })
+
     // Keyboard event for deleting objects
     const handleKeyDown = (e: KeyboardEvent) => {
       if (!canvas) return
@@ -204,6 +294,83 @@ export default function CanvasEditor({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []) // Only initialize once
+
+  // Handle variable click for binding (separate effect to get fresh csvData)
+  useEffect(() => {
+    const canvas = fabricCanvasRef.current
+    if (!canvas) return
+
+    const handleMouseDown = (e: fabric.IEvent<MouseEvent>) => {
+      // Only activate variable binding if a dataset is uploaded
+      if (!csvData) {
+        setBindingPopup(null)
+        return
+      }
+      
+      if (!e.target) {
+        setBindingPopup(null)
+        return
+      }
+      
+      const obj = e.target as fabric.Textbox
+      if (!obj.data?.elementId || obj.type !== 'textbox') {
+        setBindingPopup(null)
+        return
+      }
+
+      const textContent = obj.text || ''
+      const variables = extractVariables(textContent)
+      
+      if (variables.length === 0) {
+        setBindingPopup(null)
+        return
+      }
+
+      // Get click position and find which character was clicked
+      const pointer = canvas.getPointer(e.e)
+      
+      // Get character index from click position using Fabric's built-in method
+      const charIndex = obj.getSelectionStartFromPointer(e.e)
+      
+      // Find which variable (if any) contains this character index
+      let clickedVar = null
+      for (const v of variables) {
+        if (charIndex >= v.startIndex && charIndex <= v.endIndex) {
+          clickedVar = v
+          break
+        }
+      }
+      
+      // If no variable was clicked directly, don't show popup
+      if (!clickedVar) {
+        setBindingPopup(null)
+        return
+      }
+      
+      // Calculate popup position near the click
+      const canvasEl = canvasRef.current
+      if (!canvasEl) return
+      
+      const canvasRect = canvasEl.getBoundingClientRect()
+      const popupX = canvasRect.left + pointer.x
+      const popupY = canvasRect.top + pointer.y + 20
+      
+      setBindingPopup({
+        visible: true,
+        x: popupX,
+        y: popupY,
+        variableName: clickedVar.name,
+        fullMatch: clickedVar.fullMatch,
+        elementId: obj.data.elementId
+      })
+    }
+
+    canvas.on('mouse:down', handleMouseDown)
+
+    return () => {
+      canvas.off('mouse:down', handleMouseDown)
+    }
+  }, [csvData]) // Re-register when csvData changes
 
   // Handle paste events for creating new text boxes with formatting
   useEffect(() => {
@@ -397,6 +564,55 @@ export default function CanvasEditor({
     canvas.renderAll()
   }, [canvasSize, background])
 
+  // Helper function to apply syntax highlighting to variables in text
+  const applyVariableStyles = (textObj: fabric.Textbox) => {
+    const text = textObj.text || ''
+    const variables = extractVariables(text)
+    
+    if (variables.length === 0) {
+      // Clear any existing styles if no variables
+      textObj.styles = {}
+      return
+    }
+    
+    // Build styles object for Fabric.js
+    // Fabric uses styles[lineIndex][charIndex] format
+    const lines = text.split('\n')
+    const newStyles: Record<number, Record<number, any>> = {}
+    
+    let globalCharIndex = 0
+    lines.forEach((line, lineIndex) => {
+      const lineStart = globalCharIndex
+      const lineEnd = lineStart + line.length
+      
+      variables.forEach(v => {
+        // Check if this variable is on this line
+        if (v.startIndex >= lineStart && v.startIndex < lineEnd) {
+          const localStart = v.startIndex - lineStart
+          const localEnd = Math.min(v.endIndex - lineStart, line.length)
+          
+          if (!newStyles[lineIndex]) {
+            newStyles[lineIndex] = {}
+          }
+          
+          const color = getVariableColor(v.name)
+          
+          // Apply style to each character in the variable
+          for (let i = localStart; i < localEnd; i++) {
+            newStyles[lineIndex][i] = {
+              fill: color,
+              fontWeight: 'bold',
+            }
+          }
+        }
+      })
+      
+      globalCharIndex = lineEnd + 1 // +1 for newline
+    })
+    
+    textObj.styles = newStyles
+  }
+
   // Sync elements with Fabric.js objects
   useEffect(() => {
     const canvas = fabricCanvasRef.current
@@ -448,6 +664,8 @@ export default function CanvasEditor({
             editable: true,
             lockScalingFlip: true,
           })
+          // Apply variable syntax highlighting
+          applyVariableStyles(textObj)
           // Prevent width from changing
           textObj.setControlsVisibility({
             ml: false, // middle left
@@ -481,6 +699,8 @@ export default function CanvasEditor({
             editable: true,
             lockScalingFlip: true,
           })
+          // Apply variable syntax highlighting
+          applyVariableStyles(textObj)
           // Prevent width from changing
           textObj.setControlsVisibility({
             ml: false, // middle left
@@ -628,6 +848,76 @@ export default function CanvasEditor({
           Ctrl + Scroll to zoom
         </div>
       </div>
+
+      {/* Variable Binding Popup */}
+      {bindingPopup && csvData && (
+        <div
+          className="fixed z-50 bg-white dark:bg-gray-800 rounded-lg shadow-xl border border-gray-200 dark:border-gray-700 p-3 min-w-[220px]"
+          style={{
+            left: bindingPopup.x,
+            top: bindingPopup.y,
+            transform: 'translateX(-50%)'
+          }}
+        >
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <span 
+                className="font-mono text-sm font-bold px-2 py-0.5 rounded"
+                style={{ 
+                  backgroundColor: `${getVariableColor(bindingPopup.variableName)}20`,
+                  color: getVariableColor(bindingPopup.variableName)
+                }}
+              >
+                [{bindingPopup.variableName}]
+              </span>
+              <span className="text-gray-400 text-sm">→</span>
+            </div>
+            <button
+              onClick={() => setBindingPopup(null)}
+              className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 ml-2"
+            >
+              ✕
+            </button>
+          </div>
+          <div className="text-xs text-gray-500 dark:text-gray-400 mb-2">
+            Select a column to bind:
+          </div>
+          <div className="flex flex-col gap-1 max-h-[200px] overflow-y-auto">
+            {csvData.headers.map(header => (
+              <button
+                key={header}
+                onClick={() => {
+                  // Replace the variable text with [ColumnName]
+                  const newVarName = `[${header}]`
+                  setElements(prev => prev.map(el => {
+                    if (el.id === bindingPopup.elementId) {
+                      const newContent = el.content.replace(bindingPopup.fullMatch, newVarName)
+                      return {
+                        ...el,
+                        content: newContent,
+                        hasVariables: hasVariables(newContent),
+                      }
+                    }
+                    return el
+                  }))
+                  setBindingPopup(null)
+                }}
+                className="flex items-center gap-2 px-3 py-2 text-sm text-left rounded-md hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+              >
+                <span 
+                  className="font-mono font-bold px-1.5 py-0.5 rounded text-xs"
+                  style={{ 
+                    backgroundColor: `${getVariableColor(header)}20`,
+                    color: getVariableColor(header)
+                  }}
+                >
+                  [{header}]
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div
         id="certificate-canvas-container"
