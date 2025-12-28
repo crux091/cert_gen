@@ -88,3 +88,67 @@ export function getColumnLetter(index: number): string {
   }
   return letter
 }
+
+export interface CSVData {
+  headers: string[]
+  rows: Record<string, any>[]
+}
+
+/**
+ * Parse Excel/CSV file and return full dataset with headers and rows
+ * @param file - The Excel or CSV file to parse
+ * @returns Object containing headers array and rows as key-value objects
+ */
+export async function parseExcelFileToDataset(file: File): Promise<CSVData> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+
+    reader.onload = (e) => {
+      try {
+        const data = e.target?.result
+        const workbook = XLSX.read(data, { type: 'binary' })
+        
+        // Get the first worksheet
+        const firstSheetName = workbook.SheetNames[0]
+        const worksheet = workbook.Sheets[firstSheetName]
+        
+        // Convert to JSON with headers
+        const jsonData: any[][] = XLSX.utils.sheet_to_json(worksheet, { header: 1 })
+        
+        if (jsonData.length === 0) {
+          reject(new Error('File is empty'))
+          return
+        }
+
+        // Extract headers (first row)
+        const headers = jsonData[0].map(h => String(h).trim())
+        
+        // Convert rows to objects with header keys
+        const rows = jsonData.slice(1)
+          .filter(row => row.some(cell => cell !== undefined && cell !== null && String(cell).trim() !== ''))
+          .map(row => {
+            const obj: Record<string, any> = {}
+            headers.forEach((header, index) => {
+              obj[header] = row[index] !== undefined ? row[index] : ''
+            })
+            return obj
+          })
+
+        if (rows.length === 0) {
+          reject(new Error('No data rows found in file'))
+          return
+        }
+
+        resolve({ headers, rows })
+      } catch (error) {
+        reject(error)
+      }
+    }
+
+    reader.onerror = () => {
+      reject(new Error('Failed to read file'))
+    }
+
+    reader.readAsBinaryString(file)
+  })
+}

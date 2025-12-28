@@ -2,15 +2,14 @@
 
 import { useState, useRef, useEffect, Dispatch, SetStateAction } from 'react'
 import {
-  Layout, Type, Image as ImageIcon, Download, Settings,
+  Type, Image as ImageIcon, Download,
   Trash2, Save, FolderOpen, Upload, Palette,
   AlignLeft, AlignCenter, AlignRight,
-  Lock, Unlock, Copy, ArrowUp, ArrowDown, FileText, Loader2, X,
-  MousePointer2, Grid
+  Lock, Unlock, Copy, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, FileText, Loader2, X
 } from 'lucide-react'
 import { CertificateElement, CanvasBackground, SavedLayout } from '@/types/certificate'
 import { exportToPNG, exportToPDF, bulkExportCertificates } from '@/lib/exportService'
-import { parseExcelFile, isValidExcelFile } from '@/lib/xlsx'
+import { parseExcelFileToDataset, isValidExcelFile } from '@/lib/xlsx'
 import loadFont from '@/lib/fontLoader'
 import EmailSender from './EmailSender'
 
@@ -85,10 +84,8 @@ export default function Ribbon({
 
   // Export State
   const [isExporting, setIsExporting] = useState(false)
-  const [bulkNames, setBulkNames] = useState<string[]>([])
-  const [nameElementId, setNameElementId] = useState<string>('')
   const [bulkProgress, setBulkProgress] = useState({ current: 0, total: 0 })
-  const excelInputRef = useRef<HTMLInputElement>(null)
+  const datasetInputRef = useRef<HTMLInputElement>(null)
 
   // Canvas Element Ref for EmailSender
   const [canvasElement, setCanvasElement] = useState<HTMLElement | null>(null)
@@ -163,60 +160,21 @@ export default function Ribbon({
     }
   }
 
-  const handleExcelUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleDatasetUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
 
     if (!isValidExcelFile(file)) {
-      alert('Please upload a valid Excel file (.xlsx, .xls, or .csv)')
+      alert('Please upload a valid dataset file (.xlsx, .xls, or .csv)')
       return
     }
 
     try {
-      const { names } = await parseExcelFile(file, 0)
-      setBulkNames(names)
-      alert(`Loaded ${names.length} names from Excel file`)
+      const data = await parseExcelFileToDataset(file)
+      alert(`Dataset loaded: ${data.rows.length} rows, ${data.headers.length} columns\nHeaders: ${data.headers.join(', ')}`)
     } catch (error) {
-      console.error('Excel parse error:', error)
-      alert('Failed to parse Excel file')
-    }
-  }
-
-  const handleBulkExport = async () => {
-    if (bulkNames.length === 0) {
-      alert('Please upload an Excel file first')
-      return
-    }
-    if (!nameElementId) {
-      alert('Please select which element to replace with names')
-      return
-    }
-    const canvasElement = document.getElementById('certificate-canvas')?.parentElement
-    if (!canvasElement) {
-      alert('Canvas not found')
-      return
-    }
-
-    setIsExporting(true)
-    setBulkProgress({ current: 0, total: bulkNames.length })
-
-    try {
-      await bulkExportCertificates(
-        bulkNames,
-        nameElementId,
-        elements,
-        setElements,
-        canvasElement,
-        'pdf', // Defaulting to PDF for bulk for now, or could add toggle
-        (current, total) => setBulkProgress({ current, total })
-      )
-      alert('Bulk export completed!')
-    } catch (error) {
-      console.error('Bulk export error:', error)
-      alert(`Failed to complete bulk export: ${error instanceof Error ? error.message : 'Unknown error'}`)
-    } finally {
-      setIsExporting(false)
-      setBulkProgress({ current: 0, total: 0 })
+      console.error('Dataset parse error:', error)
+      alert('Failed to parse dataset file')
     }
   }
 
@@ -326,7 +284,6 @@ export default function Ribbon({
         <TabButton id="home" label="Home" activeTab={activeTab} setActiveTab={setActiveTab} />
         <TabButton id="insert" label="Insert" activeTab={activeTab} setActiveTab={setActiveTab} />
         <TabButton id="design" label="Design" activeTab={activeTab} setActiveTab={setActiveTab} />
-        <TabButton id="layout" label="Layout" activeTab={activeTab} setActiveTab={setActiveTab} />
         <TabButton id="import" label="Import" activeTab={activeTab} setActiveTab={setActiveTab} />
         <TabButton id="export" label="Export" activeTab={activeTab} setActiveTab={setActiveTab} />
       </div>
@@ -337,76 +294,28 @@ export default function Ribbon({
         {/* IMPORT TAB */}
         {activeTab === 'import' && (
           <>
-            <Group label="Background Type">
-              <div className="flex flex-col gap-2">
-                <button
-                  onClick={() => setBackground({ type: 'color', color: background.color || '#ffffff' })}
-                  className={`flex items-center gap-2 px-4 py-2 text-xs font-medium rounded-md border transition-all ${background.type === 'color'
-                      ? 'bg-blue-50 dark:bg-blue-900/30 border-blue-500 dark:border-blue-600 text-blue-700 dark:text-blue-300 shadow-sm'
-                      : 'bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600'
-                    }`}
-                >
-                  <Palette className="w-4 h-4" /> Color
-                </button>
-                <button
-                  onClick={() => {
-                    if (background.type !== 'image') setBackground({ type: 'image' })
-                    setTimeout(() => bgImageInputRef.current?.click(), 100)
-                  }}
-                  className={`flex items-center gap-2 px-4 py-2 text-xs font-medium rounded-md border transition-all ${background.type === 'image'
-                      ? 'bg-blue-50 dark:bg-blue-900/30 border-blue-500 dark:border-blue-600 text-blue-700 dark:text-blue-300 shadow-sm'
-                      : 'bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600'
-                    }`}
-                >
-                  <ImageIcon className="w-4 h-4" /> Template Image
-                </button>
-              </div>
-            </Group>
-
-            <Group label="Import Template">
-              {background.type === 'color' ? (
-                <div className="flex flex-col items-center gap-2 p-2 bg-white dark:bg-gray-700 rounded-md border border-gray-200 dark:border-gray-600">
-                  <input
-                    type="color"
-                    value={background.color || '#ffffff'}
-                    onChange={(e) => setBackground({ type: 'color', color: e.target.value })}
-                    className="w-10 h-10 rounded cursor-pointer border-none p-0 bg-transparent"
-                  />
-                  <span className="text-[10px] font-mono text-gray-600 dark:text-gray-400">{background.color}</span>
-                </div>
-              ) : (
-                <div className="flex flex-col items-center gap-2">
-                  <input
-                    ref={bgImageInputRef}
-                    type="file"
-                    accept="image/*"
-                    onChange={handleImageUpload}
-                    className="hidden"
-                  />
-                  <ActionButton
-                    icon={Upload}
-                    label="Upload Image"
-                    onClick={() => bgImageInputRef.current?.click()}
-                  />
-                  {background.imageUrl && (
-                    <button
-                      onClick={() => setBackground({ type: 'color', color: '#ffffff' })}
-                      className="text-[10px] font-medium text-red-600 dark:text-red-400 hover:underline hover:text-red-700 dark:hover:text-red-300"
-                    >
-                      Remove Image
-                    </button>
-                  )}
-                </div>
-              )}
+            <Group label="Dataset Upload">
+              <input
+                ref={datasetInputRef}
+                type="file"
+                accept=".xlsx,.xls,.csv"
+                onChange={handleDatasetUpload}
+                className="hidden"
+              />
+              <ActionButton
+                icon={Upload}
+                label="Upload Dataset"
+                onClick={() => datasetInputRef.current?.click()}
+              />
             </Group>
 
             <Group label="Instructions">
               <div className="flex flex-col gap-1 text-xs text-gray-600 dark:text-gray-400 max-w-xs p-2">
-                <p className="font-semibold text-blue-600 dark:text-blue-400">📋 How to Import</p>
-                <p className="text-[10px]">1. Click &quot;Template Image&quot; button</p>
-                <p className="text-[10px]">2. Upload your certificate template</p>
-                <p className="text-[10px]">3. Canvas auto-resizes to image size</p>
-                <p className="text-[10px]">4. Add text elements for dynamic fields</p>
+                <p className="font-semibold text-blue-600 dark:text-blue-400">📋 How to Import Data</p>
+                <p className="text-[10px]">1. Click &quot;Upload Dataset&quot; button</p>
+                <p className="text-[10px]">2. Select Excel or CSV file</p>
+                <p className="text-[10px]">3. Use [ColumnName] in text boxes</p>
+                <p className="text-[10px]">4. Export to generate certificates</p>
               </div>
             </Group>
           </>
@@ -429,20 +338,37 @@ export default function Ribbon({
               />
             </Group>
 
-            <Group label="Export">
-              <div className="flex gap-1">
-                <ActionButton
-                  icon={Download}
-                  label="PNG"
-                  onClick={() => handleSingleExport('png')}
-                  disabled={isExporting}
-                />
-                <ActionButton
-                  icon={FileText}
-                  label="PDF"
-                  onClick={() => handleSingleExport('pdf')}
-                  disabled={isExporting}
-                />
+            <Group label="Templates">
+              <div className="flex gap-2">
+                {showSaveInput ? (
+                  <div className="flex flex-col gap-1 w-40 p-2 bg-white dark:bg-gray-700 rounded-md border border-gray-200 dark:border-gray-600">
+                    <input
+                      type="text"
+                      value={layoutName}
+                      onChange={(e) => setLayoutName(e.target.value)}
+                      placeholder="Layout name..."
+                      className="px-2 py-1 text-xs border rounded-md bg-white dark:bg-gray-800 dark:border-gray-600 focus:ring-2 focus:ring-blue-500 outline-none"
+                      autoFocus
+                    />
+                    <div className="flex gap-1">
+                      <button
+                        onClick={handleSaveLayout}
+                        className="flex-1 bg-blue-600 text-white text-[10px] font-semibold rounded py-1.5 hover:bg-blue-700 transition-all hover:shadow-md"
+                      >
+                        Save
+                      </button>
+                      <button
+                        onClick={() => setShowSaveInput(false)}
+                        className="flex-1 bg-gray-200 dark:bg-gray-600 text-gray-700 dark:text-gray-200 text-[10px] font-semibold rounded py-1.5 hover:bg-gray-300 dark:hover:bg-gray-500 transition-all"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <ActionButton icon={Save} label="Save" onClick={() => setShowSaveInput(true)} />
+                )}
+                <ActionButton icon={FolderOpen} label="Load" onClick={() => setShowLoadModal(true)} />
               </div>
             </Group>
 
@@ -565,7 +491,9 @@ export default function Ribbon({
                 </Group>
 
                 <Group label="Arrange">
-                  <div className="grid grid-cols-2 gap-1">
+                  <div className="grid grid-cols-3 gap-1">
+                    {/* Top row */}
+                    <div></div>
                     <button
                       onClick={() => updateElement({ zIndex: selectedElement.zIndex + 1 })}
                       title="Bring Forward"
@@ -573,6 +501,34 @@ export default function Ribbon({
                     >
                       <ArrowUp className="w-3 h-3 sm:w-4 sm:h-4" />
                     </button>
+                    <div></div>
+                    {/* Middle row */}
+                    <button
+                      onClick={() => updateElement({ x: selectedElement.x - 10 })}
+                      title="Move Left"
+                      className="p-1.5 hover:bg-gray-100 dark:hover:bg-gray-600 rounded transition-all bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 hover:shadow-sm flex justify-center"
+                    >
+                      <ArrowLeft className="w-3 h-3 sm:w-4 sm:h-4" />
+                    </button>
+                    <button
+                      onClick={() => updateElement({ locked: !selectedElement.locked })}
+                      title={selectedElement.locked ? "Unlock" : "Lock"}
+                      className={`p-1.5 rounded transition-all border hover:shadow-sm flex justify-center items-center ${selectedElement.locked
+                          ? 'bg-red-50 border-red-200 text-red-600 dark:bg-red-900/20 dark:border-red-800 dark:text-red-400'
+                          : 'bg-white border-gray-200 text-gray-700 dark:bg-gray-700 dark:border-gray-600 dark:text-gray-300 hover:bg-gray-50'
+                        }`}
+                    >
+                      {selectedElement.locked ? <Lock className="w-3 h-3" /> : <Unlock className="w-3 h-3" />}
+                    </button>
+                    <button
+                      onClick={() => updateElement({ x: selectedElement.x + 10 })}
+                      title="Move Right"
+                      className="p-1.5 hover:bg-gray-100 dark:hover:bg-gray-600 rounded transition-all bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 hover:shadow-sm flex justify-center"
+                    >
+                      <ArrowRight className="w-3 h-3 sm:w-4 sm:h-4" />
+                    </button>
+                    {/* Bottom row */}
+                    <div></div>
                     <button
                       onClick={() => updateElement({ zIndex: Math.max(1, selectedElement.zIndex - 1) })}
                       title="Send Backward"
@@ -580,17 +536,7 @@ export default function Ribbon({
                     >
                       <ArrowDown className="w-3 h-3 sm:w-4 sm:h-4" />
                     </button>
-                    <button
-                      onClick={() => updateElement({ locked: !selectedElement.locked })}
-                      title={selectedElement.locked ? "Unlock" : "Lock"}
-                      className={`p-1.5 rounded transition-all border hover:shadow-sm col-span-2 flex justify-center items-center gap-1 text-[10px] font-medium ${selectedElement.locked
-                          ? 'bg-red-50 border-red-200 text-red-600 dark:bg-red-900/20 dark:border-red-800 dark:text-red-400'
-                          : 'bg-white border-gray-200 text-gray-700 dark:bg-gray-700 dark:border-gray-600 dark:text-gray-300 hover:bg-gray-50'
-                        }`}
-                    >
-                      {selectedElement.locked ? <Lock className="w-3 h-3" /> : <Unlock className="w-3 h-3" />}
-                      {selectedElement.locked ? "Locked" : "Lock"}
-                    </button>
+                    <div></div>
                   </div>
                 </Group>
               </>
@@ -656,45 +602,68 @@ export default function Ribbon({
                 </div>
               </div>
             </Group>
-          </>
-        )}
 
-        {/* LAYOUT TAB */}
-        {activeTab === 'layout' && (
-          <>
-            <Group label="Templates">
-              <div className="flex gap-2">
-                {showSaveInput ? (
-                  <div className="flex flex-col gap-1 w-40 p-2 bg-white dark:bg-gray-700 rounded-md border border-gray-200 dark:border-gray-600">
-                    <input
-                      type="text"
-                      value={layoutName}
-                      onChange={(e) => setLayoutName(e.target.value)}
-                      placeholder="Layout name..."
-                      className="px-2 py-1 text-xs border rounded-md bg-white dark:bg-gray-800 dark:border-gray-600 focus:ring-2 focus:ring-blue-500 outline-none"
-                      autoFocus
-                    />
-                    <div className="flex gap-1">
-                      <button
-                        onClick={handleSaveLayout}
-                        className="flex-1 bg-blue-600 text-white text-[10px] font-semibold rounded py-1.5 hover:bg-blue-700 transition-all hover:shadow-md"
-                      >
-                        Save
-                      </button>
-                      <button
-                        onClick={() => setShowSaveInput(false)}
-                        className="flex-1 bg-gray-200 dark:bg-gray-600 text-gray-700 dark:text-gray-200 text-[10px] font-semibold rounded py-1.5 hover:bg-gray-300 dark:hover:bg-gray-500 transition-all"
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  <ActionButton icon={Save} label="Save" onClick={() => setShowSaveInput(true)} />
-                )}
-
-                <ActionButton icon={FolderOpen} label="Load" onClick={() => setShowLoadModal(true)} />
+            <Group label="Background Type">
+              <div className="flex flex-col gap-2">
+                <button
+                  onClick={() => setBackground({ type: 'color', color: background.color || '#ffffff' })}
+                  className={`flex items-center gap-2 px-4 py-2 text-xs font-medium rounded-md border transition-all ${background.type === 'color'
+                      ? 'bg-blue-50 dark:bg-blue-900/30 border-blue-500 dark:border-blue-600 text-blue-700 dark:text-blue-300 shadow-sm'
+                      : 'bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600'
+                    }`}
+                >
+                  <Palette className="w-4 h-4" /> Color
+                </button>
+                <button
+                  onClick={() => {
+                    if (background.type !== 'image') setBackground({ type: 'image' })
+                    setTimeout(() => bgImageInputRef.current?.click(), 100)
+                  }}
+                  className={`flex items-center gap-2 px-4 py-2 text-xs font-medium rounded-md border transition-all ${background.type === 'image'
+                      ? 'bg-blue-50 dark:bg-blue-900/30 border-blue-500 dark:border-blue-600 text-blue-700 dark:text-blue-300 shadow-sm'
+                      : 'bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600'
+                    }`}
+                >
+                  <ImageIcon className="w-4 h-4" /> Template Image
+                </button>
               </div>
+            </Group>
+
+            <Group label="Background">
+              {background.type === 'color' ? (
+                <div className="flex flex-col items-center gap-2 p-2 bg-white dark:bg-gray-700 rounded-md border border-gray-200 dark:border-gray-600">
+                  <input
+                    type="color"
+                    value={background.color || '#ffffff'}
+                    onChange={(e) => setBackground({ type: 'color', color: e.target.value })}
+                    className="w-10 h-10 rounded cursor-pointer border-none p-0 bg-transparent"
+                  />
+                  <span className="text-[10px] font-mono text-gray-600 dark:text-gray-400">{background.color}</span>
+                </div>
+              ) : (
+                <div className="flex flex-col items-center gap-2">
+                  <input
+                    ref={bgImageInputRef}
+                    type="file"
+                    accept="image/*"
+                    onChange={handleImageUpload}
+                    className="hidden"
+                  />
+                  <ActionButton
+                    icon={Upload}
+                    label="Upload Image"
+                    onClick={() => bgImageInputRef.current?.click()}
+                  />
+                  {background.imageUrl && (
+                    <button
+                      onClick={() => setBackground({ type: 'color', color: '#ffffff' })}
+                      className="text-[10px] font-medium text-red-600 dark:text-red-400 hover:underline hover:text-red-700 dark:hover:text-red-300"
+                    >
+                      Remove Image
+                    </button>
+                  )}
+                </div>
+              )}
             </Group>
           </>
         )}
@@ -717,51 +686,6 @@ export default function Ribbon({
                   disabled={isExporting}
                 />
               </div>
-            </Group>
-
-            <Group label="Data Source">
-              <input
-                ref={excelInputRef}
-                type="file"
-                accept=".xlsx,.xls,.csv"
-                onChange={handleExcelUpload}
-                className="hidden"
-              />
-              <ActionButton
-                icon={Upload}
-                label="Upload Excel"
-                onClick={() => excelInputRef.current?.click()}
-              />
-              {bulkNames.length > 0 && (
-                <div className="flex flex-col justify-center px-2 py-1 bg-green-50 dark:bg-green-900/20 rounded-md border border-green-200 dark:border-green-800">
-                  <span className="text-xs font-bold text-green-700 dark:text-green-400">{bulkNames.length} records</span>
-                </div>
-              )}
-            </Group>
-
-            <Group label="Mapping">
-              <div className="flex flex-col justify-center w-48 p-2 bg-white dark:bg-gray-700 rounded-md border border-gray-200 dark:border-gray-600">
-                <label className="text-[9px] font-semibold text-gray-600 dark:text-gray-400 mb-1">Replace Element:</label>
-                <select
-                  value={nameElementId}
-                  onChange={(e) => setNameElementId(e.target.value)}
-                  className="w-full px-2 py-1.5 text-xs border rounded-md bg-white dark:bg-gray-800 dark:border-gray-600 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
-                >
-                  <option value="">Select...</option>
-                  {elements.map(el => (
-                    <option key={el.id} value={el.id}>{el.content.substring(0, 20)}...</option>
-                  ))}
-                </select>
-              </div>
-            </Group>
-
-            <Group label="Bulk Export">
-              <ActionButton
-                icon={isExporting ? Loader2 : FileText}
-                label={isExporting ? `${bulkProgress.current}/${bulkProgress.total}` : "Export All"}
-                onClick={handleBulkExport}
-                disabled={isExporting || bulkNames.length === 0 || !nameElementId}
-              />
             </Group>
 
             <Group label="Email">
