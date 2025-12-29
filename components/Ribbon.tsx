@@ -4,13 +4,13 @@ import { useState, useRef, useEffect, Dispatch, SetStateAction } from 'react'
 import {
   Type, Image as ImageIcon, Download,
   Trash2, Save, FolderOpen, Upload, Palette,
-  AlignLeft, AlignCenter, AlignRight,
-  Lock, Unlock, Copy, ArrowUp, ArrowDown, FileText, Loader2, X,
-  MousePointer2, Grid, Link2, Info
+  AlignLeft, AlignCenter, AlignRight, ArrowLeft, ArrowRight,
+  Lock, Unlock, Copy, ArrowUp, ArrowDown, Loader2, X,
+  MousePointer2, Grid, Info
 } from 'lucide-react'
 import { CertificateElement, CanvasBackground, SavedLayout, CSVData, VariableBindings } from '@/types/certificate'
-import { exportToPNG, exportToPDF, bulkExportCertificates } from '@/lib/exportService'
-import { parseExcelFile, parseExcelFileToDataset, isValidExcelFile } from '@/lib/xlsx'
+import { exportToPNG, exportToPDF } from '@/lib/exportService'
+import { parseExcelFileToDataset, isValidExcelFile } from '@/lib/xlsx'
 import loadFont from '@/lib/fontLoader'
 import EmailSender from './EmailSender'
 import { getAllUniqueVariables } from '@/lib/variableParser'
@@ -95,7 +95,6 @@ export default function Ribbon({
   // Export State
   const [isExporting, setIsExporting] = useState(false)
   const [bulkProgress, setBulkProgress] = useState({ current: 0, total: 0 })
-  const excelInputRef = useRef<HTMLInputElement>(null)
   const datasetInputRef = useRef<HTMLInputElement>(null)
 
   // Canvas Element Ref for EmailSender
@@ -182,67 +181,11 @@ export default function Ribbon({
 
     try {
       const data = await parseExcelFileToDataset(file)
-      alert(`Dataset loaded: ${data.rows.length} rows, ${data.headers.length} columns\nHeaders: ${data.headers.join(', ')}`)
-    } catch (error) {
-      console.error('Excel parse error:', error)
-      alert('Failed to parse Excel file')
-    }
-  }
-
-  const handleDatasetUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-
-    if (!isValidExcelFile(file)) {
-      alert('Please upload a valid dataset file (.xlsx, .xls, or .csv)')
-      return
-    }
-
-    try {
-      const data = await parseExcelFileToDataset(file)
       setCsvData(data)
       alert(`Dataset loaded: ${data.rows.length} rows, ${data.headers.length} columns`)
     } catch (error) {
       console.error('Dataset parse error:', error)
       alert('Failed to parse dataset file')
-    }
-  }
-
-  const handleBulkExport = async () => {
-    if (bulkNames.length === 0) {
-      alert('Please upload an Excel file first')
-      return
-    }
-    if (!nameElementId) {
-      alert('Please select which element to replace with names')
-      return
-    }
-    const canvasElement = document.getElementById('certificate-canvas')?.parentElement
-    if (!canvasElement) {
-      alert('Canvas not found')
-      return
-    }
-
-    setIsExporting(true)
-    setBulkProgress({ current: 0, total: bulkNames.length })
-
-    try {
-      await bulkExportCertificates(
-        bulkNames,
-        nameElementId,
-        elements,
-        setElements,
-        canvasElement,
-        'pdf', // Defaulting to PDF for bulk for now, or could add toggle
-        (current, total) => setBulkProgress({ current, total })
-      )
-      alert('Bulk export completed!')
-    } catch (error) {
-      console.error('Bulk export error:', error)
-      alert(`Failed to complete bulk export: ${error instanceof Error ? error.message : 'Unknown error'}`)
-    } finally {
-      setIsExporting(false)
-      setBulkProgress({ current: 0, total: 0 })
     }
   }
 
@@ -832,54 +775,6 @@ export default function Ribbon({
         {/* EXPORT TAB */}
         {activeTab === 'export' && (
           <>
-            <Group label="Dataset Upload">
-              <input
-                ref={datasetInputRef}
-                type="file"
-                accept=".xlsx,.xls,.csv"
-                onChange={handleDatasetUpload}
-                className="hidden"
-              />
-              <ActionButton
-                icon={Upload}
-                label="Upload Dataset"
-                onClick={() => datasetInputRef.current?.click()}
-              />
-              {csvData && (
-                <div className="flex flex-col justify-center px-2 py-1 bg-green-50 dark:bg-green-900/20 rounded-md border border-green-200 dark:border-green-800">
-                  <span className="text-xs font-bold text-green-700 dark:text-green-400">{csvData.rows.length} rows</span>
-                  <span className="text-[10px] text-green-600 dark:text-green-500">{csvData.headers.length} columns</span>
-                </div>
-              )}
-            </Group>
-
-            {/* Variable bindings are now done by clicking on text with [variables] directly on the canvas */}
-            
-            {csvData && (() => {
-              const textContents = elements.filter(el => el.type === 'text').map(el => el.content)
-              const detectedVariables = getAllUniqueVariables(textContents)
-              // With the new approach, variables are "bound" if they match a column name
-              const unboundVars = detectedVariables.filter(v => !csvData.headers.includes(v))
-              
-              return detectedVariables.length > 0 && (
-                <Group label="Variables">
-                  <div className="flex flex-col gap-1 px-2 py-1.5 bg-gray-50 dark:bg-gray-800 rounded-md border border-gray-200 dark:border-gray-700">
-                    <div className="flex items-center gap-1.5">
-                      <Info className="w-3 h-3 text-blue-500" />
-                      <span className="text-[10px] text-gray-500 dark:text-gray-400">
-                        Click variables on canvas to bind
-                      </span>
-                    </div>
-                    <span className={`text-xs font-medium ${unboundVars.length > 0 ? 'text-yellow-600 dark:text-yellow-400' : 'text-green-600 dark:text-green-400'}`}>
-                      {unboundVars.length > 0 
-                        ? `⚠ ${unboundVars.length} unbound: ${unboundVars.slice(0, 3).map(v => `[${v}]`).join(', ')}${unboundVars.length > 3 ? '...' : ''}`
-                        : '✓ All variables bound'}
-                    </span>
-                  </div>
-                </Group>
-              )
-            })()}
-
             {csvData && (() => {
               const textContents = elements.filter(el => el.type === 'text').map(el => el.content)
               const detectedVariables = getAllUniqueVariables(textContents)
@@ -888,38 +783,27 @@ export default function Ribbon({
               const canExport = detectedVariables.length > 0 && unboundVars.length === 0
               
               return detectedVariables.length > 0 && (
-                <>
-                  <Group label="Preview">
+                <Group label="Variable Bulk Export">
+                  <div className="flex gap-2">
                     <ActionButton
-                      icon={MousePointer2}
-                      label="Preview First"
-                      onClick={handlePreviewFirstCertificate}
-                      disabled={!canExport}
+                      icon={isExporting ? Loader2 : Download}
+                      label={isExporting ? `${bulkProgress.current}/${bulkProgress.total}` : "PNG All"}
+                      onClick={() => handleVariableBulkExport('png')}
+                      disabled={isExporting || !canExport}
                     />
-                  </Group>
-
-                  <Group label="Variable Bulk Export">
-                    <div className="flex gap-2">
-                      <ActionButton
-                        icon={isExporting ? Loader2 : Download}
-                        label={isExporting ? `${bulkProgress.current}/${bulkProgress.total}` : "PNG All"}
-                        onClick={() => handleVariableBulkExport('png')}
-                        disabled={isExporting || !canExport}
-                      />
-                      <ActionButton
-                        icon={isExporting ? Loader2 : Download}
-                        label={isExporting ? `${bulkProgress.current}/${bulkProgress.total}` : "PDF All"}
-                        onClick={() => handleVariableBulkExport('pdf')}
-                        disabled={isExporting || !canExport}
-                      />
+                    <ActionButton
+                      icon={isExporting ? Loader2 : Download}
+                      label={isExporting ? `${bulkProgress.current}/${bulkProgress.total}` : "PDF All"}
+                      onClick={() => handleVariableBulkExport('pdf')}
+                      disabled={isExporting || !canExport}
+                    />
+                  </div>
+                  {!canExport && unboundVars.length > 0 && (
+                    <div className="text-[10px] text-yellow-600 dark:text-yellow-400 px-2 py-1">
+                      Bind all variables first
                     </div>
-                    {!canExport && unboundVars.length > 0 && (
-                      <div className="text-[10px] text-yellow-600 dark:text-yellow-400 px-2 py-1">
-                        Bind all variables first
-                      </div>
-                    )}
-                  </Group>
-                </>
+                  )}
+                </Group>
               )
             })()}
 
@@ -938,51 +822,6 @@ export default function Ribbon({
                   disabled={isExporting}
                 />
               </div>
-            </Group>
-
-            <Group label="Legacy Data Source">
-              <input
-                ref={excelInputRef}
-                type="file"
-                accept=".xlsx,.xls,.csv"
-                onChange={handleExcelUpload}
-                className="hidden"
-              />
-              <ActionButton
-                icon={Upload}
-                label="Upload Excel"
-                onClick={() => excelInputRef.current?.click()}
-              />
-              {bulkNames.length > 0 && (
-                <div className="flex flex-col justify-center px-2 py-1 bg-green-50 dark:bg-green-900/20 rounded-md border border-green-200 dark:border-green-800">
-                  <span className="text-xs font-bold text-green-700 dark:text-green-400">{bulkNames.length} records</span>
-                </div>
-              )}
-            </Group>
-
-            <Group label="Legacy Mapping">
-              <div className="flex flex-col justify-center w-48 p-2 bg-white dark:bg-gray-700 rounded-md border border-gray-200 dark:border-gray-600">
-                <label className="text-[9px] font-semibold text-gray-600 dark:text-gray-400 mb-1">Replace Element:</label>
-                <select
-                  value={nameElementId}
-                  onChange={(e) => setNameElementId(e.target.value)}
-                  className="w-full px-2 py-1.5 text-xs border rounded-md bg-white dark:bg-gray-800 dark:border-gray-600 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
-                >
-                  <option value="">Select...</option>
-                  {elements.map(el => (
-                    <option key={el.id} value={el.id}>{el.content.substring(0, 20)}...</option>
-                  ))}
-                </select>
-              </div>
-            </Group>
-
-            <Group label="Legacy Bulk Export">
-              <ActionButton
-                icon={isExporting ? Loader2 : FileText}
-                label={isExporting ? `${bulkProgress.current}/${bulkProgress.total}` : "Export All"}
-                onClick={handleBulkExport}
-                disabled={isExporting || bulkNames.length === 0 || !nameElementId}
-              />
             </Group>
 
             <Group label="Email">

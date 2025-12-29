@@ -58,12 +58,13 @@ export default function CanvasEditor({
   const [isReady, setIsReady] = useState(false)
   
   // Variable binding popup state
+  // Each variable is tracked by its startIndex to uniquely identify it (even duplicates)
   const [bindingPopup, setBindingPopup] = useState<{
     visible: boolean
     x: number
     y: number
-    variableName: string
-    fullMatch: string  // The full [variable] text to replace
+    variable: { name: string; fullMatch: string; startIndex: number } | null  // Clicked variable (if detected)
+    allVariables: Array<{ name: string; fullMatch: string; startIndex: number }>  // All variables for fallback
     elementId: string
   } | null>(null)
 
@@ -326,26 +327,8 @@ export default function CanvasEditor({
         return
       }
 
-      // Get click position and find which character was clicked
+      // Get click position for popup positioning
       const pointer = canvas.getPointer(e.e)
-      
-      // Get character index from click position using Fabric's built-in method
-      const charIndex = obj.getSelectionStartFromPointer(e.e)
-      
-      // Find which variable (if any) contains this character index
-      let clickedVar = null
-      for (const v of variables) {
-        if (charIndex >= v.startIndex && charIndex <= v.endIndex) {
-          clickedVar = v
-          break
-        }
-      }
-      
-      // If no variable was clicked directly, don't show popup
-      if (!clickedVar) {
-        setBindingPopup(null)
-        return
-      }
       
       // Calculate popup position near the click
       const canvasEl = canvasRef.current
@@ -354,13 +337,41 @@ export default function CanvasEditor({
       const canvasRect = canvasEl.getBoundingClientRect()
       const popupX = canvasRect.left + pointer.x
       const popupY = canvasRect.top + pointer.y + 20
+
+      // Try to detect which character was clicked
+      let clickedVariable: { name: string; fullMatch: string; startIndex: number } | null = null
+      
+      try {
+        // Get the character index at click position
+        const charIndex = obj.getSelectionStartFromPointer(e.e)
+        
+        if (typeof charIndex === 'number' && charIndex >= 0) {
+          // Find which variable contains this character position
+          for (const v of variables) {
+            if (charIndex >= v.startIndex && charIndex < v.endIndex) {
+              clickedVariable = { name: v.name, fullMatch: v.fullMatch, startIndex: v.startIndex }
+              break
+            }
+          }
+        }
+      } catch (err) {
+        // Fallback if getSelectionStartFromPointer fails
+        console.warn('Could not detect clicked character position')
+      }
+      
+      // Store all variables with their positions for the popup
+      const allVars = variables.map(v => ({ 
+        name: v.name, 
+        fullMatch: v.fullMatch, 
+        startIndex: v.startIndex 
+      }))
       
       setBindingPopup({
         visible: true,
         x: popupX,
         y: popupY,
-        variableName: clickedVar.name,
-        fullMatch: clickedVar.fullMatch,
+        variable: clickedVariable,  // The specific variable clicked (or null if detection failed)
+        allVariables: allVars,      // All variables as fallback
         elementId: obj.data.elementId
       })
     }
@@ -849,10 +860,10 @@ export default function CanvasEditor({
         </div>
       </div>
 
-      {/* Variable Binding Popup */}
-      {bindingPopup && csvData && (
+      {/* Variable Binding Popup - only shows when a specific variable is clicked */}
+      {bindingPopup && bindingPopup.variable && csvData && (
         <div
-          className="fixed z-50 bg-white dark:bg-gray-800 rounded-lg shadow-xl border border-gray-200 dark:border-gray-700 p-3 min-w-[220px]"
+          className="fixed z-50 bg-white dark:bg-gray-800 rounded-lg shadow-xl border border-gray-200 dark:border-gray-700 p-4 min-w-[220px]"
           style={{
             left: bindingPopup.x,
             top: bindingPopup.y,
@@ -864,34 +875,39 @@ export default function CanvasEditor({
               <span 
                 className="font-mono text-sm font-bold px-2 py-0.5 rounded"
                 style={{ 
-                  backgroundColor: `${getVariableColor(bindingPopup.variableName)}20`,
-                  color: getVariableColor(bindingPopup.variableName)
+                  backgroundColor: `${getVariableColor(bindingPopup.variable.name)}20`,
+                  color: getVariableColor(bindingPopup.variable.name)
                 }}
               >
-                [{bindingPopup.variableName}]
+                [{bindingPopup.variable.name}]
               </span>
-              <span className="text-gray-400 text-sm">→</span>
+              <span className="text-gray-400 text-xs">→</span>
             </div>
             <button
               onClick={() => setBindingPopup(null)}
-              className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 ml-2"
+              className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
             >
               ✕
             </button>
           </div>
           <div className="text-xs text-gray-500 dark:text-gray-400 mb-2">
-            Select a column to bind:
+            Replace with column:
           </div>
           <div className="flex flex-col gap-1 max-h-[200px] overflow-y-auto">
             {csvData.headers.map(header => (
               <button
                 key={header}
                 onClick={() => {
-                  // Replace the variable text with [ColumnName]
+                  const targetVar = bindingPopup.variable!
                   const newVarName = `[${header}]`
                   setElements(prev => prev.map(el => {
                     if (el.id === bindingPopup.elementId) {
-                      const newContent = el.content.replace(bindingPopup.fullMatch, newVarName)
+                      // Replace by position - precise replacement using startIndex
+                      const content = el.content
+                      const newContent = 
+                        content.substring(0, targetVar.startIndex) + 
+                        newVarName + 
+                        content.substring(targetVar.startIndex + targetVar.fullMatch.length)
                       return {
                         ...el,
                         content: newContent,
