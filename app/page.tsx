@@ -4,6 +4,7 @@ import { useState } from 'react'
 import Header from '@/components/Header'
 import Ribbon from '@/components/Ribbon'
 import CanvasEditor from '@/components/CanvasEditor'
+import SlidePreviewPanel from '@/components/SlidePreviewPanel'
 import { CertificateElement, CanvasBackground, CSVData, VariableBindings } from '@/types/certificate'
 
 export default function Home() {
@@ -16,6 +17,14 @@ export default function Home() {
   const [canvasSize, setCanvasSize] = useState({ width: 800, height: 600 })
   const [csvData, setCsvData] = useState<CSVData | null>(null)
   const [variableBindings, setVariableBindings] = useState<VariableBindings>({})
+  
+  // Preview panel state
+  const [selectedPreviewIndex, setSelectedPreviewIndex] = useState<number | null>(null)
+  
+  // Get preview row data when a preview is selected
+  const previewRowData = selectedPreviewIndex !== null && csvData 
+    ? csvData.rows[selectedPreviewIndex] 
+    : null
 
   return (
     <div className="h-screen bg-gray-100 dark:bg-gray-900 transition-colors flex flex-col overflow-hidden">
@@ -38,18 +47,35 @@ export default function Home() {
         />
       </div>
       
-      <main className="flex-1 overflow-auto relative z-0 bg-gray-200 dark:bg-gray-950">
-        <CanvasEditor
-          elements={elements}
-          setElements={setElements}
-          selectedElementId={selectedElementId}
-          setSelectedElementId={setSelectedElementId}
-          canvasSize={canvasSize}
-          background={background}
-          csvData={csvData}
-          variableBindings={variableBindings}
-          setVariableBindings={setVariableBindings}
-        />
+      <main className="flex-1 overflow-hidden relative z-0 bg-gray-200 dark:bg-gray-950 flex">
+        {/* Slide Preview Panel - Only visible when CSV is loaded */}
+        {csvData && (
+          <SlidePreviewPanel
+            csvData={csvData}
+            elements={elements}
+            canvasSize={canvasSize}
+            background={background}
+            selectedPreviewIndex={selectedPreviewIndex}
+            onSelectPreview={setSelectedPreviewIndex}
+            variableBindings={variableBindings}
+          />
+        )}
+        
+        {/* Canvas Editor */}
+        <div className="flex-1 overflow-auto">
+          <CanvasEditor
+            elements={elements}
+            setElements={setElements}
+            selectedElementId={selectedElementId}
+            setSelectedElementId={setSelectedElementId}
+            canvasSize={canvasSize}
+            background={background}
+            csvData={csvData}
+            variableBindings={variableBindings}
+            setVariableBindings={setVariableBindings}
+            previewRowData={previewRowData}
+          />
+        </div>
       </main>
     </div>
   )

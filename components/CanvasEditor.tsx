@@ -1,10 +1,10 @@
 'use client'
 
-import { useRef, useEffect, useState } from 'react'
+import { useRef, useEffect, useState, useMemo } from 'react'
 import { fabric } from 'fabric'
 import { CertificateElement, CanvasBackground, CSVData, VariableBindings } from '@/types/certificate'
 import { Dispatch, SetStateAction } from 'react'
-import { hasVariables, extractVariables } from '@/lib/variableParser'
+import { hasVariables, extractVariables, replaceAllVariables } from '@/lib/variableParser'
 
 // Generate consistent colors for variable names (like syntax highlighting)
 const VARIABLE_COLORS = [
@@ -40,6 +40,7 @@ interface CanvasEditorProps {
   csvData: CSVData | null
   variableBindings: VariableBindings
   setVariableBindings: Dispatch<SetStateAction<VariableBindings>>
+  previewRowData?: Record<string, any> | null  // When set, canvas is in read-only preview mode
 }
 
 export default function CanvasEditor({
@@ -52,10 +53,14 @@ export default function CanvasEditor({
   csvData,
   variableBindings,
   setVariableBindings,
+  previewRowData,
 }: CanvasEditorProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const fabricCanvasRef = useRef<fabric.Canvas | null>(null)
   const [isReady, setIsReady] = useState(false)
+  
+  // Preview mode: when previewRowData is set, the canvas is read-only
+  const isPreviewMode = previewRowData !== null && previewRowData !== undefined
   
   // Variable binding popup state
   // Each variable is tracked by its startIndex to uniquely identify it (even duplicates)
@@ -67,6 +72,51 @@ export default function CanvasEditor({
     allVariables: Array<{ name: string; fullMatch: string; startIndex: number }>  // All variables for fallback
     elementId: string
   } | null>(null)
+
+  // Auto-bind variables when CSV is loaded or elements change
+  // This automatically binds [Variable] to Column if names match exactly
+  useEffect(() => {
+    if (!csvData) return
+    
+    // Collect all variables from all text elements (scan all, don't rely on hasVariables flag)
+    const allVariables = new Set<string>()
+    elements.forEach(el => {
+      if (el.type === 'text') {
+        const vars = extractVariables(el.content)
+        vars.forEach(v => allVariables.add(v.name))
+      }
+    })
+    
+    // Auto-bind variables that match column headers (case-insensitive match)
+    const newBindings: Record<string, string> = {}
+    allVariables.forEach(varName => {
+      // Try exact match first
+      if (csvData.headers.includes(varName)) {
+        newBindings[varName] = varName
+      } else {
+        // Try case-insensitive match
+        const matchedHeader = csvData.headers.find(
+          h => h.toLowerCase() === varName.toLowerCase()
+        )
+        if (matchedHeader) {
+          newBindings[varName] = matchedHeader
+        }
+      }
+    })
+    
+    if (Object.keys(newBindings).length > 0) {
+      setVariableBindings(prev => {
+        // Only add new bindings, don't overwrite existing ones
+        const updated = { ...prev }
+        Object.entries(newBindings).forEach(([key, value]) => {
+          if (!updated[key]) {
+            updated[key] = value
+          }
+        })
+        return updated
+      })
+    }
+  }, [csvData, elements, setVariableBindings])
 
   // Initialize Fabric.js canvas
   useEffect(() => {
@@ -214,6 +264,20 @@ export default function CanvasEditor({
       const text = obj.text || ''
       const variables = extractVariables(text)
       
+      // Auto-bind variables that match CSV column headers
+      if (csvData && variables.length > 0) {
+        const newBindings: Record<string, string> = {}
+        variables.forEach(v => {
+          // If variable name matches a column header, auto-bind it
+          if (csvData.headers.includes(v.name)) {
+            newBindings[v.name] = v.name
+          }
+        })
+        if (Object.keys(newBindings).length > 0) {
+          setVariableBindings(prev => ({ ...prev, ...newBindings }))
+        }
+      }
+      
       if (variables.length === 0) {
         obj.styles = {}
       } else {
@@ -301,7 +365,13 @@ export default function CanvasEditor({
     const canvas = fabricCanvasRef.current
     if (!canvas) return
 
-    const handleMouseDown = (e: fabric.IEvent<MouseEvent>) => {
+    const handleMouseDown = (e: fabric.IEvent<Event>) => {
+      // Disable variable binding in preview mode
+      if (isPreviewMode) {
+        setBindingPopup(null)
+        return
+      }
+      
       // Only activate variable binding if a dataset is uploaded
       if (!csvData) {
         setBindingPopup(null)
@@ -328,7 +398,8 @@ export default function CanvasEditor({
       }
 
       // Get click position for popup positioning
-      const pointer = canvas.getPointer(e.e)
+      const mouseEvent = e.e as MouseEvent
+      const pointer = canvas.getPointer(mouseEvent)
       
       // Calculate popup position near the click
       const canvasEl = canvasRef.current
@@ -343,7 +414,7 @@ export default function CanvasEditor({
       
       try {
         // Get the character index at click position
-        const charIndex = obj.getSelectionStartFromPointer(e.e)
+        const charIndex = obj.getSelectionStartFromPointer(mouseEvent)
         
         if (typeof charIndex === 'number' && charIndex >= 0) {
           // Find which variable contains this character position
@@ -381,7 +452,7 @@ export default function CanvasEditor({
     return () => {
       canvas.off('mouse:down', handleMouseDown)
     }
-  }, [csvData]) // Re-register when csvData changes
+  }, [csvData, isPreviewMode]) // Re-register when csvData or preview mode changes
 
   // Handle paste events for creating new text boxes with formatting
   useEffect(() => {
@@ -624,6 +695,37 @@ export default function CanvasEditor({
     textObj.styles = newStyles
   }
 
+  // Compute display elements - in preview mode, replace variables with actual values
+  const displayElements = useMemo(() => {
+    if (!isPreviewMode || !previewRowData || !csvData) {
+      return elements
+    }
+    
+    // Build bindings from preview row data
+    const rowBindings: Record<string, string> = {}
+    csvData.headers.forEach(header => {
+      rowBindings[header] = String(previewRowData[header] || '')
+    })
+    
+    // Also use explicit variable bindings
+    Object.entries(variableBindings).forEach(([varName, columnName]) => {
+      if (previewRowData[columnName] !== undefined) {
+        rowBindings[varName] = String(previewRowData[columnName] || '')
+      }
+    })
+    
+    // Replace variables in all text elements
+    return elements.map(el => {
+      if (el.type === 'text') {
+        return {
+          ...el,
+          content: replaceAllVariables(el.content, rowBindings)
+        }
+      }
+      return el
+    })
+  }, [elements, isPreviewMode, previewRowData, csvData, variableBindings])
+
   // Sync elements with Fabric.js objects
   useEffect(() => {
     const canvas = fabricCanvasRef.current
@@ -631,7 +733,7 @@ export default function CanvasEditor({
 
     // Get current object IDs
     const currentObjectIds = canvas.getObjects().map(obj => obj.data?.elementId).filter(Boolean)
-    const newElementIds = elements.map(el => el.id)
+    const newElementIds = displayElements.map(el => el.id)
 
     // Remove objects that no longer exist in elements
     currentObjectIds.forEach(objId => {
@@ -642,10 +744,13 @@ export default function CanvasEditor({
     })
 
     // Add or update objects
-    elements.forEach(element => {
+    displayElements.forEach(element => {
       const existingObj = canvas.getObjects().find(obj => obj.data?.elementId === element.id)
 
       if (element.type === 'text') {
+        // In preview mode, disable all interactivity
+        const isLocked = element.locked || isPreviewMode
+        
         if (existingObj && existingObj.type === 'textbox') {
           // Update existing text object
           const textObj = existingObj as fabric.Textbox
@@ -658,12 +763,12 @@ export default function CanvasEditor({
             fontFamily: element.fontFamily || 'Arial',
             fill: element.color || '#000000',
             textAlign: element.alignment || 'center',
-            lockMovementX: element.locked,
-            lockMovementY: element.locked,
-            lockRotation: element.locked,
-            lockScalingX: element.locked,
-            lockScalingY: element.locked,
-            selectable: !element.locked,
+            lockMovementX: isLocked,
+            lockMovementY: isLocked,
+            lockRotation: isLocked,
+            lockScalingX: isLocked,
+            lockScalingY: isLocked,
+            selectable: !isLocked,
             angle: element.angle || 0,
             scaleX: element.scaleX || 1,
             scaleY: element.scaleY || 1,
@@ -672,11 +777,16 @@ export default function CanvasEditor({
             splitByGrapheme: false,
             originX: 'left',
             originY: 'top',
-            editable: true,
+            editable: !isPreviewMode,  // Disable text editing in preview mode
             lockScalingFlip: true,
           })
-          // Apply variable syntax highlighting
-          applyVariableStyles(textObj)
+          // Apply variable syntax highlighting (only in edit mode)
+          if (!isPreviewMode) {
+            applyVariableStyles(textObj)
+          } else {
+            // Clear styles in preview mode for clean look
+            textObj.styles = {}
+          }
           // Prevent width from changing
           textObj.setControlsVisibility({
             ml: false, // middle left
@@ -693,12 +803,12 @@ export default function CanvasEditor({
             fontFamily: element.fontFamily || 'Arial',
             fill: element.color || '#000000',
             textAlign: element.alignment || 'center',
-            lockMovementX: element.locked,
-            lockMovementY: element.locked,
-            lockRotation: element.locked,
-            lockScalingX: element.locked,
-            lockScalingY: element.locked,
-            selectable: !element.locked,
+            lockMovementX: isLocked,
+            lockMovementY: isLocked,
+            lockRotation: isLocked,
+            lockScalingX: isLocked,
+            lockScalingY: isLocked,
+            selectable: !isLocked,
             angle: element.angle || 0,
             scaleX: element.scaleX || 1,
             scaleY: element.scaleY || 1,
@@ -707,11 +817,13 @@ export default function CanvasEditor({
             splitByGrapheme: false,
             originX: 'left',
             originY: 'top',
-            editable: true,
+            editable: !isPreviewMode,  // Disable text editing in preview mode
             lockScalingFlip: true,
           })
-          // Apply variable syntax highlighting
-          applyVariableStyles(textObj)
+          // Apply variable syntax highlighting (only in edit mode)
+          if (!isPreviewMode) {
+            applyVariableStyles(textObj)
+          }
           // Prevent width from changing
           textObj.setControlsVisibility({
             ml: false, // middle left
@@ -721,17 +833,20 @@ export default function CanvasEditor({
           canvas.add(textObj)
         }
       } else if (element.type === 'image' && element.content) {
+        // In preview mode, disable all interactivity
+        const isLocked = element.locked || isPreviewMode
+        
         if (existingObj && existingObj.type === 'image') {
           // Update existing image object
           existingObj.set({
             left: element.x,
             top: element.y,
-            lockMovementX: element.locked,
-            lockMovementY: element.locked,
-            lockRotation: element.locked,
-            lockScalingX: element.locked,
-            lockScalingY: element.locked,
-            selectable: !element.locked,
+            lockMovementX: isLocked,
+            lockMovementY: isLocked,
+            lockRotation: isLocked,
+            lockScalingX: isLocked,
+            lockScalingY: isLocked,
+            selectable: !isLocked,
             angle: element.angle || 0,
             scaleX: element.scaleX || 1,
             scaleY: element.scaleY || 1,
@@ -744,12 +859,12 @@ export default function CanvasEditor({
             img.set({
               left: element.x,
               top: element.y,
-              lockMovementX: element.locked,
-              lockMovementY: element.locked,
-              lockRotation: element.locked,
-              lockScalingX: element.locked,
-              lockScalingY: element.locked,
-              selectable: !element.locked,
+              lockMovementX: isLocked,
+              lockMovementY: isLocked,
+              lockRotation: isLocked,
+              lockScalingX: isLocked,
+              lockScalingY: isLocked,
+              selectable: !isLocked,
               angle: element.angle || 0,
               scaleX: element.scaleX || 1,
               scaleY: element.scaleY || 1,
@@ -775,7 +890,7 @@ export default function CanvasEditor({
     })
 
     canvas.renderAll()
-  }, [elements, isReady])
+  }, [displayElements, isReady, isPreviewMode, canvasSize.width])
 
   // Select object when selectedElementId changes
   useEffect(() => {
@@ -850,6 +965,20 @@ export default function CanvasEditor({
       ref={containerRef}
       className="flex items-center justify-center w-full h-full p-2 overflow-hidden bg-gray-100/50 dark:bg-gray-900/50 relative"
     >
+      {/* Preview Mode Indicator */}
+      {isPreviewMode && (
+        <div className="absolute top-4 left-4 bg-green-500 text-white px-3 py-2 rounded-lg shadow-lg z-10 flex items-center gap-2">
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+          </svg>
+          <div>
+            <div className="text-xs font-semibold">Preview Mode</div>
+            <div className="text-[10px] opacity-80">View only • Click MAIN to edit</div>
+          </div>
+        </div>
+      )}
+
       {/* Zoom indicator */}
       <div className="absolute top-4 right-4 bg-white dark:bg-gray-800 px-3 py-2 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 z-10">
         <div className="text-xs font-semibold text-gray-700 dark:text-gray-300">
@@ -861,7 +990,7 @@ export default function CanvasEditor({
       </div>
 
       {/* Variable Binding Popup - only shows when a specific variable is clicked */}
-      {bindingPopup && bindingPopup.variable && csvData && (
+      {bindingPopup && bindingPopup.variable && csvData && !isPreviewMode && (
         <div
           className="fixed z-50 bg-white dark:bg-gray-800 rounded-lg shadow-xl border border-gray-200 dark:border-gray-700 p-4 min-w-[220px]"
           style={{
