@@ -65,6 +65,40 @@ body {
   @apply bg-gray-400 dark:bg-gray-500;
 }
 
+/* Custom scrollbar for preview panel - thinner and more subtle */
+.preview-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: #6b7280 transparent;
+}
+
+.preview-scrollbar::-webkit-scrollbar {
+  width: 5px;
+}
+
+.preview-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+  border-radius: 3px;
+  margin: 4px 0;
+}
+
+.preview-scrollbar::-webkit-scrollbar-thumb {
+  background: #9ca3af;
+  border-radius: 3px;
+  transition: background 0.2s;
+}
+
+.preview-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #6b7280;
+}
+
+.dark .preview-scrollbar::-webkit-scrollbar-thumb {
+  background: #4b5563;
+}
+
+.dark .preview-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #6b7280;
+}
+
 /* Canvas styles */
 .certificate-canvas {
   background-image: 
