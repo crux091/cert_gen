@@ -6,9 +6,9 @@ import {
   Trash2, Save, FolderOpen, Upload, Palette,
   AlignLeft, AlignCenter, AlignRight, ArrowLeft, ArrowRight,
   Lock, Unlock, Copy, ArrowUp, ArrowDown, Loader2, X,
-  MousePointer2, Grid, Info, Undo2, Redo2
+  MousePointer2, Grid, Info, Undo2, Redo2, Bold, Italic, Underline
 } from 'lucide-react'
-import { CertificateElement, CanvasBackground, SavedLayout, CSVData, VariableBindings } from '@/types/certificate'
+import { CertificateElement, CanvasBackground, SavedLayout, CSVData, VariableBindings, TextSelection, CharacterStyle } from '@/types/certificate'
 import { exportToPNG, exportToPDF } from '@/lib/exportService'
 import { parseExcelFileToDataset, isValidExcelFile } from '@/lib/xlsx'
 import loadFont from '@/lib/fontLoader'
@@ -33,6 +33,8 @@ interface RibbonProps {
   canUndo: boolean
   canRedo: boolean
   clearHistory: () => void
+  textSelection: TextSelection
+  applySelectionStyle: (style: CharacterStyle) => void
 }
 
 const fontFamilies = ['Inter', 'Arial', 'Times New Roman', 'Georgia', 'Courier New', 'Verdana']
@@ -99,6 +101,8 @@ export default function Ribbon({
   canUndo,
   canRedo,
   clearHistory,
+  textSelection,
+  applySelectionStyle,
 }: RibbonProps) {
   const [activeTab, setActiveTab] = useState('home')
 
@@ -544,12 +548,53 @@ export default function Ribbon({
                     </div>
                     <div className="flex gap-2 items-center">
                       <div className="flex bg-gray-100 dark:bg-gray-700 rounded-md p-1 border border-gray-200 dark:border-gray-600">
+                        {/* Bold Button */}
                         <button
-                          onClick={() => updateElement({ fontWeight: selectedElement.fontWeight === 'bold' ? 'normal' : 'bold' })}
+                          onClick={() => {
+                            if (textSelection.hasSelection && textSelection.elementId === selectedElement.id) {
+                              // Apply to selection
+                              applySelectionStyle({ fontWeight: 'bold' })
+                            } else {
+                              // Apply to whole element
+                              updateElement({ fontWeight: selectedElement.fontWeight === 'bold' ? 'normal' : 'bold' })
+                            }
+                          }}
                           className={`p-1.5 rounded transition-all w-7 h-7 sm:w-8 sm:h-8 flex items-center justify-center ${selectedElement.fontWeight === 'bold' ? 'bg-white dark:bg-gray-600 shadow-sm text-blue-600 dark:text-blue-400' : 'hover:bg-gray-200 dark:hover:bg-gray-600'}`}
-                          title="Bold"
+                          title={textSelection.hasSelection ? "Bold Selection (Ctrl+B)" : "Bold"}
                         >
-                          <span className="font-bold text-xs sm:text-sm">B</span>
+                          <Bold className="w-3.5 h-3.5 sm:w-4 sm:h-4" strokeWidth={2.5} />
+                        </button>
+                        {/* Italic Button */}
+                        <button
+                          onClick={() => {
+                            if (textSelection.hasSelection && textSelection.elementId === selectedElement.id) {
+                              // Apply to selection
+                              applySelectionStyle({ fontStyle: 'italic' })
+                            } else {
+                              // Apply to whole element
+                              updateElement({ fontStyle: selectedElement.fontStyle === 'italic' ? 'normal' : 'italic' })
+                            }
+                          }}
+                          className={`p-1.5 rounded transition-all w-7 h-7 sm:w-8 sm:h-8 flex items-center justify-center ${selectedElement.fontStyle === 'italic' ? 'bg-white dark:bg-gray-600 shadow-sm text-blue-600 dark:text-blue-400' : 'hover:bg-gray-200 dark:hover:bg-gray-600'}`}
+                          title={textSelection.hasSelection ? "Italic Selection (Ctrl+I)" : "Italic"}
+                        >
+                          <Italic className="w-3.5 h-3.5 sm:w-4 sm:h-4" strokeWidth={2.5} />
+                        </button>
+                        {/* Underline Button */}
+                        <button
+                          onClick={() => {
+                            if (textSelection.hasSelection && textSelection.elementId === selectedElement.id) {
+                              // Apply to selection
+                              applySelectionStyle({ textDecoration: 'underline' })
+                            } else {
+                              // Apply to whole element
+                              updateElement({ textDecoration: selectedElement.textDecoration === 'underline' ? '' : 'underline' })
+                            }
+                          }}
+                          className={`p-1.5 rounded transition-all w-7 h-7 sm:w-8 sm:h-8 flex items-center justify-center ${selectedElement.textDecoration === 'underline' ? 'bg-white dark:bg-gray-600 shadow-sm text-blue-600 dark:text-blue-400' : 'hover:bg-gray-200 dark:hover:bg-gray-600'}`}
+                          title={textSelection.hasSelection ? "Underline Selection (Ctrl+U)" : "Underline"}
+                        >
+                          <Underline className="w-3.5 h-3.5 sm:w-4 sm:h-4" strokeWidth={2.5} />
                         </button>
                       </div>
                       <div className="w-px h-6 bg-gray-300 dark:bg-gray-600" />
@@ -557,9 +602,17 @@ export default function Ribbon({
                         <input
                           type="color"
                           value={selectedElement.color}
-                          onChange={(e) => updateElement({ color: e.target.value })}
+                          onChange={(e) => {
+                            if (textSelection.hasSelection && textSelection.elementId === selectedElement.id) {
+                              // Apply to selection
+                              applySelectionStyle({ fill: e.target.value })
+                            } else {
+                              // Apply to whole element
+                              updateElement({ color: e.target.value })
+                            }
+                          }}
                           className="w-5 h-5 sm:w-6 sm:h-6 rounded cursor-pointer border-none p-0 bg-transparent"
-                          title="Text Color"
+                          title={textSelection.hasSelection ? "Selection Color" : "Text Color"}
                         />
                         <span className="text-[10px] sm:text-xs font-mono text-gray-500">{selectedElement.color}</span>
                       </div>

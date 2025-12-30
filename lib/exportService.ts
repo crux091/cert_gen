@@ -2,8 +2,8 @@ import { fabric } from 'fabric'
 import jsPDF from 'jspdf'
 import JSZip from 'jszip'
 import { saveAs } from 'file-saver'
-import { CertificateElement, ExportOptions, CSVData, VariableBindings } from '@/types/certificate'
-import { replaceAllVariables, getAllUniqueVariables } from './variableParser'
+import { CertificateElement, ExportOptions, CSVData, VariableBindings, VariableStyles, RichTextStyles, CharacterStyle } from '@/types/certificate'
+import { replaceAllVariables, getAllUniqueVariables, extractVariables } from './variableParser'
 
 /**
  * Sanitize filename by replacing invalid characters
@@ -498,11 +498,101 @@ export async function bulkExportWithVariables(
         rowBindings[varName] = String(row[columnName])
       })
 
-      // Update elements with variable replacements
+      // Update elements with variable replacements and proper styles
       const updatedElements = elements.map(el => {
         if (el.type === 'text' && el.hasVariables) {
-          const replacedContent = replaceAllVariables(el.content, rowBindings)
-          return { ...el, content: replacedContent }
+          const originalContent = el.content
+          const variables = extractVariables(originalContent)
+          const variableStylesMap = el.variableStyles || {}
+          
+          const replacedContent = replaceAllVariables(originalContent, rowBindings)
+          
+          // If no variable styles, just return with replaced content
+          if (Object.keys(variableStylesMap).length === 0) {
+            return { ...el, content: replacedContent }
+          }
+          
+          // Build new styles for the replaced content
+          const newStyles: RichTextStyles = {}
+          
+          // Calculate position mappings from original to new
+          const sortedVars = [...variables].sort((a, b) => a.startIndex - b.startIndex)
+          
+          // Track cumulative offset and occurrence counts
+          let offset = 0
+          const variableOccurrences: Record<string, number> = {}
+          
+          const varReplacements: { 
+            originalStart: number
+            originalEnd: number
+            newStart: number
+            newEnd: number
+            name: string
+            occurrenceIndex: number
+            replacement: string
+          }[] = []
+          
+          sortedVars.forEach(v => {
+            const replacement = rowBindings[v.name] || `[${v.name}]`
+            const originalLen = v.endIndex - v.startIndex
+            const newLen = replacement.length
+            
+            // Get occurrence index for this variable
+            const occurrenceIndex = variableOccurrences[v.name] || 0
+            variableOccurrences[v.name] = occurrenceIndex + 1
+            
+            varReplacements.push({
+              originalStart: v.startIndex,
+              originalEnd: v.endIndex,
+              newStart: v.startIndex + offset,
+              newEnd: v.startIndex + offset + newLen,
+              name: v.name,
+              occurrenceIndex,
+              replacement
+            })
+            
+            offset += newLen - originalLen
+          })
+          
+          // Apply variable styles to replacement positions using occurrence-based keys
+          const lines = replacedContent.split('\n')
+          
+          varReplacements.forEach(vr => {
+            // Use occurrence-based key to get the style for this specific occurrence
+            const varKey = `${vr.name}_${vr.occurrenceIndex}`
+            const varStyle = variableStylesMap[varKey]
+            if (!varStyle) return
+            
+            let globalCharIndex = 0
+            lines.forEach((line, lineIndex) => {
+              const lineStart = globalCharIndex
+              const lineEnd = lineStart + line.length
+              
+              const repStart = Math.max(vr.newStart, lineStart)
+              const repEnd = Math.min(vr.newEnd, lineEnd)
+              
+              if (repStart < repEnd) {
+                if (!newStyles[lineIndex]) {
+                  newStyles[lineIndex] = {}
+                }
+                
+                for (let i = repStart - lineStart; i < repEnd - lineStart; i++) {
+                  newStyles[lineIndex][i] = {
+                    ...newStyles[lineIndex][i],
+                    ...varStyle
+                  }
+                }
+              }
+              
+              globalCharIndex = lineEnd + 1
+            })
+          })
+          
+          return { 
+            ...el, 
+            content: replacedContent,
+            styles: Object.keys(newStyles).length > 0 ? newStyles : el.styles
+          }
         }
         return el
       })

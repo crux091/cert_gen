@@ -1,8 +1,8 @@
 'use client'
 
-import { useRef, useEffect, useState, useMemo } from 'react'
+import { useRef, useEffect, useState, useMemo, useCallback, MutableRefObject } from 'react'
 import { fabric } from 'fabric'
-import { CertificateElement, CanvasBackground, CSVData, VariableBindings } from '@/types/certificate'
+import { CertificateElement, CanvasBackground, CSVData, VariableBindings, TextSelection, CharacterStyle, RichTextStyles, VariableStyles } from '@/types/certificate'
 import { Dispatch, SetStateAction } from 'react'
 import { hasVariables, extractVariables, replaceAllVariables } from '@/lib/variableParser'
 
@@ -45,6 +45,8 @@ interface CanvasEditorProps {
   pushToHistoryDebounced: () => void
   onUndo: () => void
   onRedo: () => void
+  setTextSelection: Dispatch<SetStateAction<TextSelection>>
+  applySelectionStyleRef: MutableRefObject<((style: CharacterStyle) => void) | null>
 }
 
 export default function CanvasEditor({
@@ -62,6 +64,8 @@ export default function CanvasEditor({
   pushToHistoryDebounced,
   onUndo,
   onRedo,
+  setTextSelection,
+  applySelectionStyleRef,
 }: CanvasEditorProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const fabricCanvasRef = useRef<fabric.Canvas | null>(null)
@@ -80,6 +84,227 @@ export default function CanvasEditor({
     allVariables: Array<{ name: string; fullMatch: string; startIndex: number }>  // All variables for fallback
     elementId: string
   } | null>(null)
+
+  // Apply style to selected text range
+  const applySelectionStyle = useCallback((style: CharacterStyle) => {
+    const canvas = fabricCanvasRef.current
+    if (!canvas) return
+    
+    const activeObject = canvas.getActiveObject() as fabric.Textbox
+    if (!activeObject || activeObject.type !== 'textbox') return
+    if (!activeObject.isEditing) return
+    
+    const selectionStart = activeObject.selectionStart ?? 0
+    const selectionEnd = activeObject.selectionEnd ?? 0
+    
+    if (selectionStart === selectionEnd) return // No selection
+    
+    const text = activeObject.text || ''
+    const lines = text.split('\n')
+    
+    // Extract variables to detect if selection is on a variable
+    const variables = extractVariables(text)
+    
+    // Find which variables are fully or partially selected, with their occurrence index
+    const selectedVariables: { name: string; startIndex: number; endIndex: number; occurrenceIndex: number }[] = []
+    
+    // Count occurrences of each variable name to determine occurrence index
+    const variableOccurrences: Record<string, number> = {}
+    variables.forEach(v => {
+      const occurrenceIndex = variableOccurrences[v.name] || 0
+      variableOccurrences[v.name] = occurrenceIndex + 1
+      
+      // Check if selection overlaps with this variable
+      if (selectionStart < v.endIndex && selectionEnd > v.startIndex) {
+        selectedVariables.push({ ...v, occurrenceIndex })
+      }
+    })
+    
+    // Get current styles or initialize empty
+    const currentStyles = activeObject.styles || {}
+    const newStyles: Record<number, Record<number, any>> = JSON.parse(JSON.stringify(currentStyles))
+    
+    // Calculate line/char positions for selection range
+    let globalCharIndex = 0
+    lines.forEach((line, lineIndex) => {
+      const lineStart = globalCharIndex
+      const lineEnd = lineStart + line.length
+      
+      // Check if this line overlaps with selection
+      const selStart = Math.max(selectionStart, lineStart)
+      const selEnd = Math.min(selectionEnd, lineEnd)
+      
+      if (selStart < selEnd) {
+        // This line has selected characters
+        if (!newStyles[lineIndex]) {
+          newStyles[lineIndex] = {}
+        }
+        
+        for (let i = selStart - lineStart; i < selEnd - lineStart; i++) {
+          if (!newStyles[lineIndex][i]) {
+            newStyles[lineIndex][i] = {}
+          }
+          // Apply/toggle the style
+          Object.entries(style).forEach(([key, value]) => {
+            if (key === 'fontWeight') {
+              // Toggle bold
+              newStyles[lineIndex][i].fontWeight = 
+                newStyles[lineIndex][i].fontWeight === 'bold' ? 'normal' : value
+            } else if (key === 'fontStyle') {
+              // Toggle italic
+              newStyles[lineIndex][i].fontStyle = 
+                newStyles[lineIndex][i].fontStyle === 'italic' ? 'normal' : value
+            } else if (key === 'textDecoration') {
+              // Toggle underline - Fabric.js uses 'underline' property with boolean
+              newStyles[lineIndex][i].underline = 
+                newStyles[lineIndex][i].underline === true ? false : true
+            } else {
+              // Direct set for other styles (fill, fontSize, etc.)
+              newStyles[lineIndex][i][key] = value
+            }
+          })
+        }
+      }
+      
+      globalCharIndex = lineEnd + 1 // +1 for newline
+    })
+    
+    // Push to history before applying
+    pushToHistory()
+    
+    // Apply styles to fabric object
+    activeObject.styles = newStyles
+    canvas.renderAll()
+    
+    // Build variable styles update - extract the style applied to each variable
+    const elementId = activeObject.data?.elementId
+    if (elementId) {
+      // For each selected variable, save its formatting to variableStyles
+      // Key format: "{variableName}_{occurrenceIndex}" to treat each occurrence separately
+      const variableStylesUpdate: VariableStyles = {}
+      
+      selectedVariables.forEach(v => {
+        // Use occurrence-based key to treat each occurrence as separate entity
+        const varKey = `${v.name}_${v.occurrenceIndex}`
+        
+        // Get the style applied to the first character of this variable
+        // (we assume uniform styling across the variable)
+        let varLineIndex = 0
+        let varCharIndex = v.startIndex
+        
+        // Find the line and local char index for this variable
+        let charCount = 0
+        for (let li = 0; li < lines.length; li++) {
+          if (charCount + lines[li].length > v.startIndex) {
+            varLineIndex = li
+            varCharIndex = v.startIndex - charCount
+            break
+          }
+          charCount += lines[li].length + 1
+        }
+        
+        // Get the style at this position
+        const charStyle = newStyles[varLineIndex]?.[varCharIndex] || {}
+        
+        // Only save relevant formatting properties (not fill which is variable color)
+        const styleToSave: CharacterStyle = {}
+        if (charStyle.fontWeight && charStyle.fontWeight !== 'normal') {
+          styleToSave.fontWeight = charStyle.fontWeight
+        }
+        if (charStyle.fontStyle && charStyle.fontStyle !== 'normal') {
+          styleToSave.fontStyle = charStyle.fontStyle
+        }
+        if (charStyle.underline) {
+          styleToSave.underline = true
+        }
+        
+        if (Object.keys(styleToSave).length > 0) {
+          variableStylesUpdate[varKey] = styleToSave
+        }
+      })
+      
+      setElements(prev => prev.map(el => {
+        if (el.id !== elementId) return el
+        
+        // Merge with existing variable styles
+        const existingVarStyles = el.variableStyles || {}
+        const mergedVarStyles = { ...existingVarStyles }
+        
+        // Update or clear styles for selected variables
+        selectedVariables.forEach(v => {
+          const varKey = `${v.name}_${v.occurrenceIndex}`
+          
+          if (variableStylesUpdate[varKey]) {
+            mergedVarStyles[varKey] = { 
+              ...(mergedVarStyles[varKey] || {}),
+              ...variableStylesUpdate[varKey]
+            }
+          } else {
+            // If no style was applied (toggled off), remove it
+            // Check if toggle turned it off
+            const varLineIndex = (() => {
+              let charCount = 0
+              for (let li = 0; li < lines.length; li++) {
+                if (charCount + lines[li].length > v.startIndex) {
+                  return li
+                }
+                charCount += lines[li].length + 1
+              }
+              return 0
+            })()
+            const varCharIndex = (() => {
+              let charCount = 0
+              for (let li = 0; li < lines.length; li++) {
+                if (charCount + lines[li].length > v.startIndex) {
+                  return v.startIndex - charCount
+                }
+                charCount += lines[li].length + 1
+              }
+              return 0
+            })()
+            
+            const currentCharStyle = newStyles[varLineIndex]?.[varCharIndex] || {}
+            
+            // Update individual properties based on what was toggled
+            if (style.fontWeight) {
+              if (currentCharStyle.fontWeight === 'normal' || !currentCharStyle.fontWeight) {
+                delete mergedVarStyles[varKey]?.fontWeight
+              }
+            }
+            if (style.fontStyle) {
+              if (currentCharStyle.fontStyle === 'normal' || !currentCharStyle.fontStyle) {
+                delete mergedVarStyles[varKey]?.fontStyle
+              }
+            }
+            if (style.textDecoration) {
+              if (!currentCharStyle.underline) {
+                delete mergedVarStyles[varKey]?.underline
+              }
+            }
+            
+            // Clean up empty variable style objects
+            if (mergedVarStyles[varKey] && Object.keys(mergedVarStyles[varKey]).length === 0) {
+              delete mergedVarStyles[varKey]
+            }
+          }
+        })
+        
+        return { 
+          ...el, 
+          styles: newStyles,
+          variableStyles: Object.keys(mergedVarStyles).length > 0 ? mergedVarStyles : undefined
+        }
+      }))
+    }
+  }, [pushToHistory, setElements])
+  
+  // Register the applySelectionStyle function to the ref
+  useEffect(() => {
+    applySelectionStyleRef.current = applySelectionStyle
+    return () => {
+      applySelectionStyleRef.current = null
+    }
+  }, [applySelectionStyle, applySelectionStyleRef])
 
   // Auto-bind variables when CSV is loaded or elements change
   // This automatically binds [Variable] to Column if names match exactly
@@ -277,6 +502,7 @@ export default function CanvasEditor({
       // Apply syntax highlighting after editing is done
       const text = obj.text || ''
       const variables = extractVariables(text)
+      const elementId = obj.data?.elementId
       
       // Auto-bind variables that match CSV column headers
       if (csvData && variables.length > 0) {
@@ -292,44 +518,65 @@ export default function CanvasEditor({
         }
       }
       
-      if (variables.length === 0) {
-        obj.styles = {}
-      } else {
-        // Build styles object for Fabric.js
-        const lines = text.split('\n')
-        const newStyles: Record<number, Record<number, any>> = {}
+      // We need to get variableStyles from elements, but elements might be stale
+      // So we'll read it via setElements callback to get latest
+      setElements(prev => {
+        const currentElement = prev.find(el => el.id === elementId)
+        const variableFormats = currentElement?.variableStyles || {}
         
-        let globalCharIndex = 0
-        lines.forEach((line, lineIndex) => {
-          const lineStart = globalCharIndex
-          const lineEnd = lineStart + line.length
+        // Build merged styles with variable formatting applied to ALL characters
+        const mergedStyles: Record<number, Record<number, any>> = {}
+        
+        if (variables.length > 0) {
+          const lines = text.split('\n')
           
-          variables.forEach(v => {
-            if (v.startIndex >= lineStart && v.startIndex < lineEnd) {
-              const localStart = v.startIndex - lineStart
-              const localEnd = Math.min(v.endIndex - lineStart, line.length)
-              
-              if (!newStyles[lineIndex]) {
-                newStyles[lineIndex] = {}
-              }
-              
-              const color = getVariableColor(v.name)
-              
-              for (let i = localStart; i < localEnd; i++) {
-                newStyles[lineIndex][i] = {
-                  fill: color,
-                  fontWeight: 'bold',
+          // Track occurrence count for each variable name
+          const variableOccurrences: Record<string, number> = {}
+          
+          let globalCharIndex = 0
+          lines.forEach((line, lineIndex) => {
+            const lineStart = globalCharIndex
+            const lineEnd = lineStart + line.length
+            
+            variables.forEach(v => {
+              if (v.startIndex >= lineStart && v.startIndex < lineEnd) {
+                const localStart = v.startIndex - lineStart
+                const localEnd = Math.min(v.endIndex - lineStart, line.length)
+                
+                if (!mergedStyles[lineIndex]) {
+                  mergedStyles[lineIndex] = {}
+                }
+                
+                const color = getVariableColor(v.name)
+                
+                // Get occurrence index for this variable
+                const occurrenceIndex = variableOccurrences[v.name] || 0
+                variableOccurrences[v.name] = occurrenceIndex + 1
+                
+                // Use occurrence-based key to get formatting
+                const varKey = `${v.name}_${occurrenceIndex}`
+                const varFormat = variableFormats[varKey] || {}
+                
+                // Apply style to ALL characters of this variable
+                for (let i = localStart; i < localEnd; i++) {
+                  mergedStyles[lineIndex][i] = {
+                    ...varFormat,  // Apply variable-specific formatting
+                    fill: color,   // Variable color for syntax highlighting
+                  }
                 }
               }
-            }
+            })
+            
+            globalCharIndex = lineEnd + 1
           })
-          
-          globalCharIndex = lineEnd + 1
-        })
+        }
         
-        obj.styles = newStyles
-      }
-      canvas.renderAll()
+        obj.styles = mergedStyles
+        canvas.renderAll()
+        
+        // Return unchanged elements (we're just reading)
+        return prev
+      })
     })
 
     // Keyboard event for deleting objects and undo/redo
@@ -488,6 +735,125 @@ export default function CanvasEditor({
       canvas.off('mouse:down', handleMouseDown)
     }
   }, [csvData, isPreviewMode]) // Re-register when csvData or preview mode changes
+
+  // Track text selection for inline formatting
+  useEffect(() => {
+    const canvas = fabricCanvasRef.current
+    if (!canvas) return
+    
+    // Track selection changes in textbox
+    const handleSelectionChanged = () => {
+      const activeObject = canvas.getActiveObject() as fabric.Textbox
+      if (!activeObject || activeObject.type !== 'textbox' || !activeObject.isEditing) {
+        setTextSelection({
+          elementId: null,
+          start: 0,
+          end: 0,
+          hasSelection: false,
+        })
+        return
+      }
+      
+      const start = activeObject.selectionStart ?? 0
+      const end = activeObject.selectionEnd ?? 0
+      
+      setTextSelection({
+        elementId: activeObject.data?.elementId || null,
+        start,
+        end,
+        hasSelection: start !== end,
+      })
+    }
+    
+    // Clear selection when exiting edit mode
+    const handleEditingExited = (e: fabric.IEvent) => {
+      setTextSelection({
+        elementId: null,
+        start: 0,
+        end: 0,
+        hasSelection: false,
+      })
+      
+      // Sync styles back to element state - use e.target which is the textbox being exited
+      const textbox = e.target as fabric.Textbox
+      if (textbox && textbox.type === 'textbox' && textbox.data?.elementId) {
+        const elementId = textbox.data.elementId
+        // Extract only user-applied styles (not variable colors) by filtering out variable positions
+        const canvasStyles = textbox.styles || {}
+        const text = textbox.text || ''
+        const variables = extractVariables(text)
+        
+        // Create a copy of styles, removing variable-specific styling
+        const userStyles: Record<number, Record<number, any>> = {}
+        const lines = text.split('\n')
+        
+        // Build set of variable character positions to exclude variable-specific colors
+        const variablePositions = new Set<string>()
+        let globalCharIndex = 0
+        lines.forEach((line, lineIndex) => {
+          const lineStart = globalCharIndex
+          const lineEnd = lineStart + line.length
+          
+          variables.forEach(v => {
+            if (v.startIndex >= lineStart && v.startIndex < lineEnd) {
+              const localStart = v.startIndex - lineStart
+              const localEnd = Math.min(v.endIndex - lineStart, line.length)
+              for (let i = localStart; i < localEnd; i++) {
+                variablePositions.add(`${lineIndex}-${i}`)
+              }
+            }
+          })
+          
+          globalCharIndex = lineEnd + 1
+        })
+        
+        // Copy styles, preserving user formatting but excluding variable colors
+        Object.entries(canvasStyles).forEach(([lineIdx, lineStyles]) => {
+          const lineIndex = parseInt(lineIdx)
+          if (typeof lineStyles === 'object' && lineStyles !== null) {
+            Object.entries(lineStyles as Record<number, any>).forEach(([charIdx, charStyle]) => {
+              const charIndex = parseInt(charIdx)
+              const posKey = `${lineIndex}-${charIndex}`
+              
+              // Copy the style, but for variable positions, don't save the fill color
+              // (it will be re-applied by variable highlighting)
+              const styleToSave = { ...charStyle }
+              if (variablePositions.has(posKey)) {
+                delete styleToSave.fill // Don't persist variable colors
+              }
+              
+              // Only save if there's something meaningful left
+              if (Object.keys(styleToSave).length > 0) {
+                if (!userStyles[lineIndex]) {
+                  userStyles[lineIndex] = {}
+                }
+                userStyles[lineIndex][charIndex] = styleToSave
+              }
+            })
+          }
+        })
+        
+        setElements(prev => prev.map(el => 
+          el.id === elementId ? { ...el, styles: userStyles } : el
+        ))
+      }
+    }
+    
+    canvas.on('text:selection:changed', handleSelectionChanged)
+    canvas.on('text:editing:exited', handleEditingExited)
+    
+    // Also listen to mouse:up for selection changes
+    const handleMouseUp = () => {
+      setTimeout(handleSelectionChanged, 0)
+    }
+    document.addEventListener('mouseup', handleMouseUp)
+    
+    return () => {
+      canvas.off('text:selection:changed', handleSelectionChanged)
+      canvas.off('text:editing:exited', handleEditingExited)
+      document.removeEventListener('mouseup', handleMouseUp)
+    }
+  }, [setTextSelection, setElements])
 
   // Handle paste events for creating new text boxes with formatting
   useEffect(() => {
@@ -684,20 +1050,27 @@ export default function CanvasEditor({
   }, [canvasSize, background])
 
   // Helper function to apply syntax highlighting to variables in text
-  const applyVariableStyles = (textObj: fabric.Textbox) => {
+  const applyVariableStyles = (textObj: fabric.Textbox, userStyles?: RichTextStyles, variableFormats?: VariableStyles) => {
     const text = textObj.text || ''
     const variables = extractVariables(text)
     
+    // Start with user styles as the base (deep copy to avoid mutation)
+    const newStyles: Record<number, Record<number, any>> = userStyles 
+      ? JSON.parse(JSON.stringify(userStyles)) 
+      : {}
+    
     if (variables.length === 0) {
-      // Clear any existing styles if no variables
-      textObj.styles = {}
+      // Apply only user styles if no variables
+      textObj.styles = newStyles
       return
     }
     
     // Build styles object for Fabric.js
     // Fabric uses styles[lineIndex][charIndex] format
     const lines = text.split('\n')
-    const newStyles: Record<number, Record<number, any>> = {}
+    
+    // Track occurrence count for each variable name
+    const variableOccurrences: Record<string, number> = {}
     
     let globalCharIndex = 0
     lines.forEach((line, lineIndex) => {
@@ -716,11 +1089,20 @@ export default function CanvasEditor({
           
           const color = getVariableColor(v.name)
           
+          // Get the occurrence index for this variable
+          const occurrenceIndex = variableOccurrences[v.name] || 0
+          variableOccurrences[v.name] = occurrenceIndex + 1
+          
+          // Use occurrence-based key to get formatting for this specific occurrence
+          const varKey = `${v.name}_${occurrenceIndex}`
+          const varFormat = variableFormats?.[varKey] || {}
+          
           // Apply style to each character in the variable
+          // Apply variable color + any user-defined formatting to ALL characters
           for (let i = localStart; i < localEnd; i++) {
             newStyles[lineIndex][i] = {
-              fill: color,
-              fontWeight: 'bold',
+              ...varFormat,  // Apply variable-specific formatting to all chars
+              fill: color,   // Apply color for syntax highlighting
             }
           }
         }
@@ -751,12 +1133,107 @@ export default function CanvasEditor({
       }
     })
     
-    // Replace variables in all text elements
+    // Replace variables in all text elements and rebuild styles for preview
     return elements.map(el => {
       if (el.type === 'text') {
+        const originalContent = el.content
+        const variables = extractVariables(originalContent)
+        const variableStylesMap = el.variableStyles || {}
+        
+        // If no variables, just return as-is
+        if (variables.length === 0) {
+          return {
+            ...el,
+            content: replaceAllVariables(el.content, rowBindings)
+          }
+        }
+        
+        // Build new styles for the replaced content
+        // We need to track position shifts as variables are replaced
+        const newContent = replaceAllVariables(originalContent, rowBindings)
+        const newStyles: RichTextStyles = {}
+        
+        // Calculate position mappings from original to new
+        // Sort variables by start position
+        const sortedVars = [...variables].sort((a, b) => a.startIndex - b.startIndex)
+        
+        // Track cumulative offset and occurrence counts
+        let offset = 0
+        const variableOccurrences: Record<string, number> = {}
+        
+        const varReplacements: { 
+          originalStart: number
+          originalEnd: number
+          newStart: number
+          newEnd: number
+          name: string
+          occurrenceIndex: number
+          replacement: string
+        }[] = []
+        
+        sortedVars.forEach(v => {
+          const replacement = rowBindings[v.name] || `[${v.name}]`
+          const originalLen = v.endIndex - v.startIndex
+          const newLen = replacement.length
+          
+          // Get occurrence index for this variable
+          const occurrenceIndex = variableOccurrences[v.name] || 0
+          variableOccurrences[v.name] = occurrenceIndex + 1
+          
+          varReplacements.push({
+            originalStart: v.startIndex,
+            originalEnd: v.endIndex,
+            newStart: v.startIndex + offset,
+            newEnd: v.startIndex + offset + newLen,
+            name: v.name,
+            occurrenceIndex,
+            replacement
+          })
+          
+          offset += newLen - originalLen
+        })
+        
+        // Apply variable styles to replacement positions using occurrence-based keys
+        const lines = newContent.split('\n')
+        
+        varReplacements.forEach(vr => {
+          // Use occurrence-based key to get the style for this specific occurrence
+          const varKey = `${vr.name}_${vr.occurrenceIndex}`
+          const varStyle = variableStylesMap[varKey]
+          if (!varStyle) return
+          
+          // Find which line(s) this replacement spans
+          let globalCharIndex = 0
+          lines.forEach((line, lineIndex) => {
+            const lineStart = globalCharIndex
+            const lineEnd = lineStart + line.length
+            
+            // Check if replacement overlaps with this line
+            const repStart = Math.max(vr.newStart, lineStart)
+            const repEnd = Math.min(vr.newEnd, lineEnd)
+            
+            if (repStart < repEnd) {
+              if (!newStyles[lineIndex]) {
+                newStyles[lineIndex] = {}
+              }
+              
+              // Apply style to each character in the replacement
+              for (let i = repStart - lineStart; i < repEnd - lineStart; i++) {
+                newStyles[lineIndex][i] = {
+                  ...newStyles[lineIndex][i],
+                  ...varStyle
+                }
+              }
+            }
+            
+            globalCharIndex = lineEnd + 1
+          })
+        })
+        
         return {
           ...el,
-          content: replaceAllVariables(el.content, rowBindings)
+          content: newContent,
+          styles: Object.keys(newStyles).length > 0 ? newStyles : el.styles
         }
       }
       return el
@@ -798,6 +1275,8 @@ export default function CanvasEditor({
             fontSize: element.fontSize || 16,
             fontWeight: element.fontWeight || 'normal',
             fontFamily: element.fontFamily || 'Arial',
+            fontStyle: element.fontStyle || 'normal',
+            underline: element.textDecoration === 'underline',
             fill: element.color || '#000000',
             textAlign: element.alignment || 'center',
             lockMovementX: isLocked,
@@ -817,13 +1296,17 @@ export default function CanvasEditor({
             editable: !isPreviewMode,  // Disable text editing in preview mode
             lockScalingFlip: true,
           })
+          // Apply per-character styles from element state
+          if (element.styles) {
+            textObj.styles = JSON.parse(JSON.stringify(element.styles))
+          }
           // Apply variable syntax highlighting (only in edit mode)
           if (!isPreviewMode) {
-            applyVariableStyles(textObj)
-          } else {
-            // Clear styles in preview mode for clean look
-            textObj.styles = {}
+            // Get original element for variableStyles (displayElements may have modified content)
+            const originalElement = elements.find(el => el.id === element.id)
+            applyVariableStyles(textObj, element.styles, originalElement?.variableStyles)
           }
+          // In preview mode, keep user styles but don't apply variable colors
           // Prevent width from changing
           textObj.setControlsVisibility({
             ml: false, // middle left
@@ -838,6 +1321,8 @@ export default function CanvasEditor({
             fontSize: element.fontSize || 16,
             fontWeight: element.fontWeight || 'normal',
             fontFamily: element.fontFamily || 'Arial',
+            fontStyle: element.fontStyle || 'normal',
+            underline: element.textDecoration === 'underline',
             fill: element.color || '#000000',
             textAlign: element.alignment || 'center',
             lockMovementX: isLocked,
@@ -857,9 +1342,15 @@ export default function CanvasEditor({
             editable: !isPreviewMode,  // Disable text editing in preview mode
             lockScalingFlip: true,
           })
+          // Apply per-character styles from element state
+          if (element.styles) {
+            textObj.styles = JSON.parse(JSON.stringify(element.styles))
+          }
           // Apply variable syntax highlighting (only in edit mode)
           if (!isPreviewMode) {
-            applyVariableStyles(textObj)
+            // Get original element for variableStyles (displayElements may have modified content)
+            const originalElement = elements.find(el => el.id === element.id)
+            applyVariableStyles(textObj, element.styles, originalElement?.variableStyles)
           }
           // Prevent width from changing
           textObj.setControlsVisibility({
