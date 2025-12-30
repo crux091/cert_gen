@@ -6,7 +6,7 @@ import {
   Trash2, Save, FolderOpen, Upload, Palette,
   AlignLeft, AlignCenter, AlignRight, ArrowLeft, ArrowRight,
   Lock, Unlock, Copy, ArrowUp, ArrowDown, Loader2, X,
-  MousePointer2, Grid, Info
+  MousePointer2, Grid, Info, Undo2, Redo2
 } from 'lucide-react'
 import { CertificateElement, CanvasBackground, SavedLayout, CSVData, VariableBindings } from '@/types/certificate'
 import { exportToPNG, exportToPDF } from '@/lib/exportService'
@@ -17,17 +17,22 @@ import { getAllUniqueVariables } from '@/lib/variableParser'
 
 interface RibbonProps {
   elements: CertificateElement[]
-  setElements: Dispatch<SetStateAction<CertificateElement[]>>
+  setElements: (elements: CertificateElement[] | ((prev: CertificateElement[]) => CertificateElement[])) => void
   selectedElementId: string | null
   setSelectedElementId: Dispatch<SetStateAction<string | null>>
   canvasSize: { width: number; height: number }
-  setCanvasSize: Dispatch<SetStateAction<{ width: number; height: number }>>
+  setCanvasSize: (size: { width: number; height: number } | ((prev: { width: number; height: number }) => { width: number; height: number })) => void
   background: CanvasBackground
-  setBackground: Dispatch<SetStateAction<CanvasBackground>>
+  setBackground: (background: CanvasBackground | ((prev: CanvasBackground) => CanvasBackground)) => void
   csvData: CSVData | null
   setCsvData: Dispatch<SetStateAction<CSVData | null>>
   variableBindings: VariableBindings
   setVariableBindings: Dispatch<SetStateAction<VariableBindings>>
+  undo: () => void
+  redo: () => void
+  canUndo: boolean
+  canRedo: boolean
+  clearHistory: () => void
 }
 
 const fontFamilies = ['Inter', 'Arial', 'Times New Roman', 'Georgia', 'Courier New', 'Verdana']
@@ -89,6 +94,11 @@ export default function Ribbon({
   setCsvData,
   variableBindings,
   setVariableBindings,
+  undo,
+  redo,
+  canUndo,
+  canRedo,
+  clearHistory,
 }: RibbonProps) {
   const [activeTab, setActiveTab] = useState('home')
 
@@ -340,6 +350,8 @@ export default function Ribbon({
       setCanvasSize({ ...layout.canvasSize })
       if (layout.background) setBackground({ ...layout.background })
       setShowLoadModal(false)
+      // Clear history after loading a layout to start fresh
+      clearHistory()
     }
   }
 
@@ -429,6 +441,18 @@ export default function Ribbon({
         {activeTab === 'home' && (
           <>
             <Group label="Actions">
+              <ActionButton
+                icon={Undo2}
+                label="Undo"
+                onClick={undo}
+                disabled={!canUndo}
+              />
+              <ActionButton
+                icon={Redo2}
+                label="Redo"
+                onClick={redo}
+                disabled={!canRedo}
+              />
               <ActionButton
                 icon={Trash2}
                 label="Clear All"

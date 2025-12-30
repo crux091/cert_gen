@@ -54,3 +54,9 @@ export interface CSVData {
 export interface VariableBindings {
   [variableName: string]: string // Maps variable name to CSV column name
 }
+
+export interface HistoryState {
+  elements: CertificateElement[]
+  background: CanvasBackground
+  canvasSize: { width: number; height: number }
+}

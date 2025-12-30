@@ -41,6 +41,10 @@ interface CanvasEditorProps {
   variableBindings: VariableBindings
   setVariableBindings: Dispatch<SetStateAction<VariableBindings>>
   previewRowData?: Record<string, any> | null  // When set, canvas is in read-only preview mode
+  pushToHistory: () => void
+  pushToHistoryDebounced: () => void
+  onUndo: () => void
+  onRedo: () => void
 }
 
 export default function CanvasEditor({
@@ -54,6 +58,10 @@ export default function CanvasEditor({
   variableBindings,
   setVariableBindings,
   previewRowData,
+  pushToHistory,
+  pushToHistoryDebounced,
+  onUndo,
+  onRedo,
 }: CanvasEditorProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const fabricCanvasRef = useRef<fabric.Canvas | null>(null)
@@ -163,6 +171,9 @@ export default function CanvasEditor({
       const obj = e.target
       if (!obj || !obj.data?.elementId) return
 
+      // Save state before this modification for undo
+      pushToHistory()
+
       const elementId = obj.data.elementId
       setElements(prev => prev.map(el => {
         if (el.id === elementId) {
@@ -239,6 +250,9 @@ export default function CanvasEditor({
         width: canvasSize.width,
         height: canvasSize.height,
       })
+
+      // Use debounced history push for text changes
+      pushToHistoryDebounced()
 
       const elementId = obj.data.elementId
       const textContent = obj.text || ''
@@ -318,18 +332,36 @@ export default function CanvasEditor({
       canvas.renderAll()
     })
 
-    // Keyboard event for deleting objects
+    // Keyboard event for deleting objects and undo/redo
     const handleKeyDown = (e: KeyboardEvent) => {
       if (!canvas) return
+
+      const target = e.target as HTMLElement
+      const isInputField = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA'
+
+      // Handle Undo (Ctrl+Z)
+      if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+        // Allow undo even if editing text, but not in input fields
+        if (isInputField) return
+        e.preventDefault()
+        onUndo()
+        return
+      }
+
+      // Handle Redo (Ctrl+Y or Ctrl+Shift+Z)
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.shiftKey && e.key === 'z') || (e.shiftKey && e.key === 'Z'))) {
+        if (isInputField) return
+        e.preventDefault()
+        onRedo()
+        return
+      }
 
       const activeObject = canvas.getActiveObject()
       if (!activeObject) return
 
       if (e.key === 'Delete' || e.key === 'Backspace') {
-        const target = e.target as HTMLElement
-
         // Allow deletion if not typing in input
-        if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') {
+        if (isInputField) {
           return
         }
 
@@ -340,6 +372,9 @@ export default function CanvasEditor({
         }
 
         e.preventDefault()
+
+        // Save state before deletion for undo
+        pushToHistory()
 
         const elementId = activeObject.data?.elementId
         if (elementId) {
@@ -576,6 +611,8 @@ export default function CanvasEditor({
         zIndex: elements.length,
       }
 
+      // Save state before adding element for undo
+      pushToHistory()
       setElements(prev => [...prev, newElement])
     }
 
@@ -584,7 +621,7 @@ export default function CanvasEditor({
     return () => {
       document.removeEventListener('paste', handlePaste)
     }
-  }, [canvasSize, elements.length, setElements])
+  }, [canvasSize, elements.length, setElements, pushToHistory])
 
   // Update canvas size and background
   useEffect(() => {
