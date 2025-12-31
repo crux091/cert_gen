@@ -9,7 +9,7 @@ import {
   MousePointer2, Grid, Info, Undo2, Redo2, Bold, Italic, Underline
 } from 'lucide-react'
 import { CertificateElement, CanvasBackground, SavedLayout, CSVData, VariableBindings, TextSelection, CharacterStyle } from '@/types/certificate'
-import { exportToPNG, exportToPDF } from '@/lib/exportService'
+import { exportToPNG, exportToPDF, bulkExportWithVariables, exportRowWithVariables } from '@/lib/exportService'
 import { parseExcelFileToDataset, isValidExcelFile } from '@/lib/xlsx'
 import loadFont from '@/lib/fontLoader'
 import EmailSender from './EmailSender'
@@ -28,6 +28,7 @@ interface RibbonProps {
   setCsvData: Dispatch<SetStateAction<CSVData | null>>
   variableBindings: VariableBindings
   setVariableBindings: Dispatch<SetStateAction<VariableBindings>>
+  selectedPreviewIndex: number | null
   undo: () => void
   redo: () => void
   canUndo: boolean
@@ -96,6 +97,7 @@ export default function Ribbon({
   setCsvData,
   variableBindings,
   setVariableBindings,
+  selectedPreviewIndex,
   undo,
   redo,
   canUndo,
@@ -161,19 +163,37 @@ export default function Ribbon({
   // --- Handlers ---
 
   const handleSingleExport = async (format: 'png' | 'pdf') => {
-    const canvasElement = document.getElementById('certificate-canvas-container')
-    if (!canvasElement) {
-      alert('Canvas container not found')
-      return
-    }
-
     setIsExporting(true)
     try {
       const filename = `certificate-${Date.now()}.${format}`
-      if (format === 'png') {
-        await exportToPNG(canvasElement, filename, { dpi: 300, quality: 1 })
+
+      // If a dataset is loaded, export the selected preview row (or first row)
+      if (csvData && csvData.rows.length > 0) {
+        const rowIndex = selectedPreviewIndex ?? 0
+        const row = csvData.rows[rowIndex]
+        await exportRowWithVariables(
+          row,
+          csvData,
+          variableBindings,
+          elements,
+          canvasSize,
+          background,
+          filename,
+          format,
+          { dpi: 300, quality: 1 }
+        )
       } else {
-        await exportToPDF(canvasElement, filename, { dpi: 300 })
+        // Template-only export from the live canvas
+        const canvasElement = document.getElementById('certificate-canvas-container')
+        if (!canvasElement) {
+          alert('Canvas container not found')
+          return
+        }
+        if (format === 'png') {
+          await exportToPNG(canvasElement, filename, { dpi: 300, quality: 1 })
+        } else {
+          await exportToPDF(canvasElement, filename, { dpi: 300 })
+        }
       }
       alert(`Successfully exported as ${format.toUpperCase()}!`)
     } catch (error) {
@@ -217,15 +237,9 @@ export default function Ribbon({
       return
     }
 
-    const unboundVars = detectedVariables.filter(v => !variableBindings[v])
+    const unboundVars = detectedVariables.filter(v => !variableBindings[v] && !csvData.headers.includes(v))
     if (unboundVars.length > 0) {
       alert(`Please bind all variables before exporting. Unbound variables: ${unboundVars.map(v => `[${v}]`).join(', ')}`)
-      return
-    }
-
-    const canvasElement = document.getElementById('certificate-canvas')?.parentElement
-    if (!canvasElement) {
-      alert('Canvas not found')
       return
     }
 
@@ -233,15 +247,15 @@ export default function Ribbon({
     setBulkProgress({ current: 0, total: csvData.rows.length })
 
     try {
-      const { bulkExportWithVariables } = await import('@/lib/exportService')
       await bulkExportWithVariables(
         csvData,
         variableBindings,
         elements,
-        setElements,
-        canvasElement,
+        canvasSize,
+        background,
         format,
-        (current, total) => setBulkProgress({ current, total })
+        (current, total) => setBulkProgress({ current, total }),
+        { dpi: 300, quality: 1 }
       )
       alert('Variable-based bulk export completed!')
     } catch (error) {
@@ -267,7 +281,7 @@ export default function Ribbon({
       return
     }
 
-    const unboundVars = detectedVariables.filter(v => !variableBindings[v])
+    const unboundVars = detectedVariables.filter(v => !variableBindings[v] && !csvData.headers.includes(v))
     if (unboundVars.length > 0) {
       alert(`Cannot preview: Unbound variables: ${unboundVars.map(v => `[${v}]`).join(', ')}`)
       return
@@ -276,8 +290,11 @@ export default function Ribbon({
     // Get first row
     const firstRow = csvData.rows[0]
     
-    // Create row-specific bindings
+    // Create row-specific bindings (auto-bind headers + explicit bindings)
     const rowBindings: Record<string, string> = {}
+    csvData.headers.forEach(header => {
+      rowBindings[header] = String(firstRow[header] || '')
+    })
     Object.entries(variableBindings).forEach(([varName, columnName]) => {
       rowBindings[varName] = String(firstRow[columnName] || '')
     })

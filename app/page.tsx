@@ -84,6 +84,7 @@ export default function Home() {
           setCsvData={setCsvData}
           variableBindings={variableBindings}
           setVariableBindings={setVariableBindings}
+          selectedPreviewIndex={selectedPreviewIndex}
           undo={undo}
           redo={redo}
           canUndo={canUndo}

@@ -1782,6 +1782,7 @@ export default function CanvasEditor({
   return (
     <div
       ref={containerRef}
+      id="certificate-canvas-container"
       className="flex items-center justify-center w-full h-full p-2 overflow-hidden bg-gray-100/50 dark:bg-gray-900/50 relative"
     >
       {/* Background Loading Indicator */}
