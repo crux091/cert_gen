@@ -148,19 +148,24 @@ export default function SlidePreviewPanel({
       if (el.type === 'text') {
         // Always try to replace variables - replaceAllVariables is safe even if no variables exist
         const content = replaceAllVariables(el.content, rowBindings)
+
+        // Text must not be scaled; convert any legacy scale into true container dimensions.
+        const previewWidth = Math.round((el.width || (canvasSize.width * 0.8)) * (el.scaleX || 1))
+        const previewHeight = typeof el.height === 'number' ? Math.round(el.height * (el.scaleY || 1)) : undefined
         
         const textbox = new fabric.Textbox(content, {
           left: el.x,
           top: el.y,
-          width: el.width || canvasSize.width * 0.8,
+          width: previewWidth,
+          height: previewHeight,
           fontSize: el.fontSize || 16,
           fontFamily: el.fontFamily || 'Arial',
           fill: el.color || '#000000',
           fontWeight: el.fontWeight || 'normal',
           textAlign: el.alignment || 'center',
           angle: el.angle || 0,
-          scaleX: el.scaleX || 1,
-          scaleY: el.scaleY || 1,
+          scaleX: 1,
+          scaleY: 1,
           opacity: el.opacity || 1,
           selectable: false,
           evented: false,

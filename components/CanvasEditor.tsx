@@ -493,6 +493,60 @@ export default function CanvasEditor({
     const host = canvasHostRef.current
     if (!host || fabricCanvasRef.current) return
 
+    // Patch Fabric Textbox controls once to behave like Canva/Figma:
+    // resizing changes container width/height and keeps glyphs unscaled.
+    const textboxProto: any = (fabric.Textbox as any).prototype
+    if (textboxProto && !textboxProto.__nonStretchResizePatched) {
+      const minSize = 10
+      const wrapActionHandler = (originalHandler: any) => {
+        return function wrappedTextboxResizeHandler(eventData: any, transform: any, x: number, y: number) {
+          const performed = originalHandler ? originalHandler(eventData, transform, x, y) : false
+          const target = transform?.target as any
+          const canvas = target?.canvas as fabric.Canvas | undefined
+          if (!target || target.type !== 'textbox' || !canvas) return performed
+
+          const currentFixedHeight = (target.data && typeof target.data.fixedHeight === 'number')
+            ? target.data.fixedHeight
+            : (typeof target.height === 'number' ? target.height : 0)
+
+          const scaledWidth = Math.max(minSize, Math.round((target.width || 0) * (target.scaleX || 1)))
+          const scaledHeight = Math.max(minSize, Math.round((target.height || 0) * (target.scaleY || 1)))
+
+          // If the user dragged vertically (top/bottom/corner), adopt that as the new fixed container height.
+          const nextFixedHeight = (target.scaleY && target.scaleY !== 1) ? scaledHeight : currentFixedHeight
+
+          target.data = { ...(target.data || {}), fixedHeight: nextFixedHeight }
+
+          // Convert any scaling into real dimensions and reset scale to avoid glyph distortion.
+          // Note: width changes trigger Textbox.initDimensions (re-wrap), which also recalculates height.
+          // We immediately restore the fixed container height afterwards.
+          if (target.scaleX && target.scaleX !== 1) {
+            target.set({ width: scaledWidth, scaleX: 1 })
+          }
+          if (target.scaleY && target.scaleY !== 1) {
+            target.set({ scaleY: 1 })
+          }
+
+          // Keep container height stable during wrapping/resizing.
+          target.set({ height: nextFixedHeight })
+          target.setCoords()
+          canvas.requestRenderAll()
+
+          return performed
+        }
+      }
+
+      const controls = textboxProto.controls
+      const keys = ['ml', 'mr', 'mt', 'mb', 'tl', 'tr', 'bl', 'br']
+      keys.forEach((k) => {
+        if (controls?.[k]?.actionHandler) {
+          controls[k].actionHandler = wrapActionHandler(controls[k].actionHandler)
+        }
+      })
+
+      textboxProto.__nonStretchResizePatched = true
+    }
+
     // IMPORTANT:
     // Fabric mutates the DOM around the canvas (wraps it, adds upper canvas + hidden textarea).
     // If React owns the <canvas> element, React reconciliation can crash with
@@ -557,6 +611,29 @@ export default function CanvasEditor({
       const elementId = obj.data.elementId
       setElements(prev => prev.map(el => {
         if (el.id === elementId) {
+          // Textboxes should persist as true container dimensions (no scale distortion).
+          if (obj.type === 'textbox') {
+            const textbox = obj as fabric.Textbox
+            const nextWidth = Math.round(textbox.width || 0)
+            const nextHeight = Math.round(textbox.height || 0)
+
+            // Ensure Fabric object is normalized as well.
+            textbox.set({ scaleX: 1, scaleY: 1, width: nextWidth, height: nextHeight })
+            textbox.data = { ...(textbox.data || {}), fixedHeight: nextHeight }
+            textbox.setCoords()
+
+            return {
+              ...el,
+              x: Math.round(textbox.left || 0),
+              y: Math.round(textbox.top || 0),
+              width: nextWidth,
+              height: nextHeight,
+              angle: textbox.angle || 0,
+              scaleX: 1,
+              scaleY: 1,
+            }
+          }
+
           return {
             ...el,
             x: Math.round(obj.left || 0),
@@ -580,12 +657,9 @@ export default function CanvasEditor({
         // Store original position and canvas dimensions
         obj.data.originalLeft = obj.left
         obj.data.originalTop = obj.top
-        // Ensure textbox width doesn't exceed canvas bounds
-        const maxWidth = canvasSize.width * 0.8
-        obj.set({ 
-          width: maxWidth,
-          splitByGrapheme: false,
-        })
+        // Do not force width during editing; users define the wrapping box.
+        obj.data.fixedHeight = typeof obj.data.fixedHeight === 'number' ? obj.data.fixedHeight : obj.height
+        obj.set({ splitByGrapheme: false, height: obj.data.fixedHeight })
         canvas.renderAll()
       }
     })
@@ -593,13 +667,15 @@ export default function CanvasEditor({
     canvas.on('text:editing:exited', (e) => {
       const obj = e.target as fabric.Textbox
       if (obj && obj.data?.elementId) {
-        // Restore position and lock the width after editing
-        const maxWidth = canvasSize.width * 0.8
-        obj.set({ 
-          width: maxWidth,
+        // Restore position; keep user-defined wrapping box dimensions.
+        const fixedHeight = typeof obj.data.fixedHeight === 'number' ? obj.data.fixedHeight : obj.height
+        obj.set({
           splitByGrapheme: false,
           left: obj.data.originalLeft || obj.left,
           top: obj.data.originalTop || obj.top,
+          height: fixedHeight,
+          scaleX: 1,
+          scaleY: 1,
         })
         canvas.renderAll()
       }
@@ -609,10 +685,11 @@ export default function CanvasEditor({
       const obj = e.target as fabric.Textbox
       if (!obj || !obj.data?.elementId) return
 
-      // Constrain width during typing
-      const maxWidth = canvasSize.width * 0.8
-      if (obj.width && obj.width !== maxWidth) {
-        obj.set({ width: maxWidth })
+      // Textbox.initDimensions recalculates height on changes; restore fixed container height.
+      const fixedHeight = typeof obj.data.fixedHeight === 'number' ? obj.data.fixedHeight : obj.height
+      if (typeof fixedHeight === 'number' && fixedHeight > 0) {
+        obj.set({ height: fixedHeight, scaleX: 1, scaleY: 1 })
+        canvas.requestRenderAll()
       }
 
       // Use debounced history push for text changes
@@ -1514,6 +1591,13 @@ export default function CanvasEditor({
       if (element.type === 'text') {
         // In preview mode, disable all interactivity
         const isLocked = element.locked || isPreviewMode
+
+        // Normalize legacy scale-based text sizing into true container dimensions.
+        const baseWidth = element.width ?? (canvasSize.width * 0.8)
+        const baseHeight = element.height
+        const appliedWidth = Math.max(10, Math.round(baseWidth * (element.scaleX || 1)))
+        const appliedHeight = Math.max(10, Math.round((baseHeight ?? 0) * (element.scaleY || 1)))
+        const hasExplicitHeight = typeof baseHeight === 'number'
         
         if (existingObj && existingObj.type === 'textbox') {
           // Update existing text object
@@ -1536,16 +1620,23 @@ export default function CanvasEditor({
             lockScalingY: isLocked,
             selectable: !isLocked,
             angle: element.angle || 0,
-            scaleX: element.scaleX || 1,
-            scaleY: element.scaleY || 1,
+            // Keep glyphs unscaled; container size is controlled by width/height.
+            scaleX: 1,
+            scaleY: 1,
             opacity: element.opacity || 1,
-            width: canvasSize.width * 0.8, // 80% of canvas width
+            width: appliedWidth,
             splitByGrapheme: false,
             originX: 'left',
             originY: 'top',
             editable: !isPreviewMode,  // Disable text editing in preview mode
             lockScalingFlip: true,
+            lockUniScaling: false,
           })
+
+          // Apply (and persist) a fixed container height (Type Spot).
+          const nextHeight = hasExplicitHeight ? appliedHeight : (typeof (textObj.data?.fixedHeight) === 'number' ? textObj.data.fixedHeight : textObj.height)
+          textObj.data = { ...(textObj.data || {}), fixedHeight: nextHeight }
+          textObj.set({ height: nextHeight })
           // Apply per-character styles from element state (strip fill - it's for syntax highlighting only)
           textObj.styles = stripFillFromStyles(element.styles)
           // Apply variable syntax highlighting (only in edit mode)
@@ -1555,11 +1646,6 @@ export default function CanvasEditor({
             applyVariableStyles(textObj, element.styles, originalElement?.variableStyles)
           }
           // In preview mode, keep user styles but don't apply variable colors
-          // Prevent width from changing
-          textObj.setControlsVisibility({
-            ml: false, // middle left
-            mr: false, // middle right
-          })
           textObj.data = { ...textObj.data, locked: element.locked, zIndex: element.zIndex }
         } else {
           // Create new text object
@@ -1580,16 +1666,21 @@ export default function CanvasEditor({
             lockScalingY: isLocked,
             selectable: !isLocked,
             angle: element.angle || 0,
-            scaleX: element.scaleX || 1,
-            scaleY: element.scaleY || 1,
+            scaleX: 1,
+            scaleY: 1,
             opacity: element.opacity || 1,
-            width: canvasSize.width * 0.8, // 80% of canvas width
+            width: appliedWidth,
             splitByGrapheme: false,
             originX: 'left',
             originY: 'top',
             editable: !isPreviewMode,  // Disable text editing in preview mode
             lockScalingFlip: true,
+            lockUniScaling: false,
           })
+
+          const nextHeight = hasExplicitHeight ? appliedHeight : textObj.height
+          textObj.data = { elementId: element.id, locked: element.locked, zIndex: element.zIndex, fixedHeight: nextHeight }
+          textObj.set({ height: nextHeight })
           // Apply per-character styles from element state (strip fill - it's for syntax highlighting only)
           textObj.styles = stripFillFromStyles(element.styles)
           // Apply variable syntax highlighting (only in edit mode)
@@ -1598,12 +1689,6 @@ export default function CanvasEditor({
             const originalElement = elements.find(el => el.id === element.id)
             applyVariableStyles(textObj, element.styles, originalElement?.variableStyles)
           }
-          // Prevent width from changing
-          textObj.setControlsVisibility({
-            ml: false, // middle left
-            mr: false, // middle right
-          })
-          textObj.data = { elementId: element.id, locked: element.locked, zIndex: element.zIndex }
           canvas.add(textObj)
         }
       } else if (element.type === 'image' && element.content) {

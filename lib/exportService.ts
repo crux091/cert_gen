@@ -332,11 +332,16 @@ async function renderCertificateToStaticCanvas(
 
       const { text, styles } = rowBindings ? computeTextWithRowBindings(el, rowBindings) : { text: el.content, styles: el.styles }
 
+      // Text must never be scaled (prevents stretched/squashed glyphs).
+      // Convert any legacy scale into true container dimensions.
+      const exportWidth = Math.round((el.width || 200) * (el.scaleX || 1))
+      const exportHeight = typeof el.height === 'number' ? Math.round(el.height * (el.scaleY || 1)) : undefined
+
       const textbox = new fabric.Textbox(text, {
         left: el.x,
         top: el.y,
-        width: el.width || 200,
-        height: el.height,
+        width: exportWidth,
+        height: exportHeight,
         fontSize: el.fontSize || 24,
         fontFamily: el.fontFamily || 'Arial',
         fontWeight: el.fontWeight || 'normal',
@@ -345,8 +350,8 @@ async function renderCertificateToStaticCanvas(
         fill: el.color || '#000000',
         textAlign: el.alignment || 'left',
         angle: el.angle || 0,
-        scaleX: el.scaleX || 1,
-        scaleY: el.scaleY || 1,
+        scaleX: 1,
+        scaleY: 1,
         opacity: el.opacity ?? 1,
         originX: 'left',
         originY: 'top',
