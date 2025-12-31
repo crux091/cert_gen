@@ -6,10 +6,10 @@ import {
   Trash2, Save, FolderOpen, Upload, Palette,
   AlignLeft, AlignCenter, AlignRight, ArrowLeft, ArrowRight,
   Lock, Unlock, Copy, ArrowUp, ArrowDown, Loader2, X,
-  MousePointer2, Grid, Info
+  MousePointer2, Grid, Info, Undo2, Redo2, Bold, Italic, Underline
 } from 'lucide-react'
-import { CertificateElement, CanvasBackground, SavedLayout, CSVData, VariableBindings } from '@/types/certificate'
-import { exportToPNG, exportToPDF } from '@/lib/exportService'
+import { CertificateElement, CanvasBackground, SavedLayout, CSVData, VariableBindings, TextSelection, CharacterStyle } from '@/types/certificate'
+import { exportToPNG, exportToPDF, bulkExportWithVariables, exportRowWithVariables } from '@/lib/exportService'
 import { parseExcelFileToDataset, isValidExcelFile } from '@/lib/xlsx'
 import loadFont from '@/lib/fontLoader'
 import EmailSender from './EmailSender'
@@ -17,17 +17,25 @@ import { getAllUniqueVariables } from '@/lib/variableParser'
 
 interface RibbonProps {
   elements: CertificateElement[]
-  setElements: Dispatch<SetStateAction<CertificateElement[]>>
+  setElements: (elements: CertificateElement[] | ((prev: CertificateElement[]) => CertificateElement[])) => void
   selectedElementId: string | null
   setSelectedElementId: Dispatch<SetStateAction<string | null>>
   canvasSize: { width: number; height: number }
-  setCanvasSize: Dispatch<SetStateAction<{ width: number; height: number }>>
+  setCanvasSize: (size: { width: number; height: number } | ((prev: { width: number; height: number }) => { width: number; height: number })) => void
   background: CanvasBackground
-  setBackground: Dispatch<SetStateAction<CanvasBackground>>
+  setBackground: (background: CanvasBackground | ((prev: CanvasBackground) => CanvasBackground)) => void
   csvData: CSVData | null
   setCsvData: Dispatch<SetStateAction<CSVData | null>>
   variableBindings: VariableBindings
   setVariableBindings: Dispatch<SetStateAction<VariableBindings>>
+  selectedPreviewIndex: number | null
+  undo: () => void
+  redo: () => void
+  canUndo: boolean
+  canRedo: boolean
+  clearHistory: () => void
+  textSelection: TextSelection
+  applySelectionStyle: (style: CharacterStyle) => void
 }
 
 const fontFamilies = ['Inter', 'Arial', 'Times New Roman', 'Georgia', 'Courier New', 'Verdana']
@@ -89,6 +97,14 @@ export default function Ribbon({
   setCsvData,
   variableBindings,
   setVariableBindings,
+  selectedPreviewIndex,
+  undo,
+  redo,
+  canUndo,
+  canRedo,
+  clearHistory,
+  textSelection,
+  applySelectionStyle,
 }: RibbonProps) {
   const [activeTab, setActiveTab] = useState('home')
 
@@ -147,19 +163,37 @@ export default function Ribbon({
   // --- Handlers ---
 
   const handleSingleExport = async (format: 'png' | 'pdf') => {
-    const canvasElement = document.getElementById('certificate-canvas-container')
-    if (!canvasElement) {
-      alert('Canvas container not found')
-      return
-    }
-
     setIsExporting(true)
     try {
       const filename = `certificate-${Date.now()}.${format}`
-      if (format === 'png') {
-        await exportToPNG(canvasElement, filename, { dpi: 300, quality: 1 })
+
+      // If a dataset is loaded, export the selected preview row (or first row)
+      if (csvData && csvData.rows.length > 0) {
+        const rowIndex = selectedPreviewIndex ?? 0
+        const row = csvData.rows[rowIndex]
+        await exportRowWithVariables(
+          row,
+          csvData,
+          variableBindings,
+          elements,
+          canvasSize,
+          background,
+          filename,
+          format,
+          { dpi: 300, quality: 1 }
+        )
       } else {
-        await exportToPDF(canvasElement, filename, { dpi: 300 })
+        // Template-only export from the live canvas
+        const canvasElement = document.getElementById('certificate-canvas-container')
+        if (!canvasElement) {
+          alert('Canvas container not found')
+          return
+        }
+        if (format === 'png') {
+          await exportToPNG(canvasElement, filename, { dpi: 300, quality: 1 })
+        } else {
+          await exportToPDF(canvasElement, filename, { dpi: 300 })
+        }
       }
       alert(`Successfully exported as ${format.toUpperCase()}!`)
     } catch (error) {
@@ -203,15 +237,9 @@ export default function Ribbon({
       return
     }
 
-    const unboundVars = detectedVariables.filter(v => !variableBindings[v])
+    const unboundVars = detectedVariables.filter(v => !variableBindings[v] && !csvData.headers.includes(v))
     if (unboundVars.length > 0) {
       alert(`Please bind all variables before exporting. Unbound variables: ${unboundVars.map(v => `[${v}]`).join(', ')}`)
-      return
-    }
-
-    const canvasElement = document.getElementById('certificate-canvas')?.parentElement
-    if (!canvasElement) {
-      alert('Canvas not found')
       return
     }
 
@@ -219,15 +247,15 @@ export default function Ribbon({
     setBulkProgress({ current: 0, total: csvData.rows.length })
 
     try {
-      const { bulkExportWithVariables } = await import('@/lib/exportService')
       await bulkExportWithVariables(
         csvData,
         variableBindings,
         elements,
-        setElements,
-        canvasElement,
+        canvasSize,
+        background,
         format,
-        (current, total) => setBulkProgress({ current, total })
+        (current, total) => setBulkProgress({ current, total }),
+        { dpi: 300, quality: 1 }
       )
       alert('Variable-based bulk export completed!')
     } catch (error) {
@@ -253,7 +281,7 @@ export default function Ribbon({
       return
     }
 
-    const unboundVars = detectedVariables.filter(v => !variableBindings[v])
+    const unboundVars = detectedVariables.filter(v => !variableBindings[v] && !csvData.headers.includes(v))
     if (unboundVars.length > 0) {
       alert(`Cannot preview: Unbound variables: ${unboundVars.map(v => `[${v}]`).join(', ')}`)
       return
@@ -262,8 +290,11 @@ export default function Ribbon({
     // Get first row
     const firstRow = csvData.rows[0]
     
-    // Create row-specific bindings
+    // Create row-specific bindings (auto-bind headers + explicit bindings)
     const rowBindings: Record<string, string> = {}
+    csvData.headers.forEach(header => {
+      rowBindings[header] = String(firstRow[header] || '')
+    })
     Object.entries(variableBindings).forEach(([varName, columnName]) => {
       rowBindings[varName] = String(firstRow[columnName] || '')
     })
@@ -289,23 +320,73 @@ export default function Ribbon({
       alert('Please upload an image file')
       return
     }
-    const reader = new FileReader()
-    reader.onload = (event) => {
-      const imageUrl = event.target?.result as string
-
-      // Load image to get dimensions and auto-resize canvas
-      const img = new Image()
-      img.onload = () => {
-        setCanvasSize({ width: img.width, height: img.height })
-        setBackground({ type: 'image', imageUrl })
+    
+    // Warn for very large files (>20MB)
+    const fileSizeMB = file.size / (1024 * 1024)
+    if (fileSizeMB > 20) {
+      const proceed = confirm(
+        `This image is ${fileSizeMB.toFixed(1)}MB which may cause performance issues. ` +
+        `For best results, consider using an image under 20MB. Continue anyway?`
+      )
+      if (!proceed) {
+        // Reset file input
+        if (e.target) e.target.value = ''
+        return
       }
-      img.onerror = () => {
-        alert('Failed to load image dimensions')
-        setBackground({ type: 'image', imageUrl })
-      }
-      img.src = imageUrl
     }
-    reader.readAsDataURL(file)
+    
+    // Use Object URL for better memory handling with large images
+    // Object URLs are more efficient than data URLs for large files
+    const objectUrl = URL.createObjectURL(file)
+    
+    // Load image to get dimensions
+    const img = new Image()
+    img.onload = () => {
+      // Warn for very large dimensions
+      if (img.width > 8000 || img.height > 8000) {
+        const proceed = confirm(
+          `This image has very large dimensions (${img.width}x${img.height}px) which may cause ` +
+          `rendering issues in some browsers. For best results, consider using an image under 8000px. Continue anyway?`
+        )
+        if (!proceed) {
+          URL.revokeObjectURL(objectUrl)
+          return
+        }
+      }
+      
+      // For very large images, convert to data URL to ensure persistence
+      // (Object URLs are revoked when the page refreshes)
+      // But for images under 10MB, use data URL; for larger, keep object URL
+      if (fileSizeMB <= 10) {
+        // Use data URL for smaller images (more portable, survives refresh)
+        const reader = new FileReader()
+        reader.onload = (event) => {
+          const dataUrl = event.target?.result as string
+          setCanvasSize({ width: img.width, height: img.height })
+          setBackground({ type: 'image', imageUrl: dataUrl })
+          URL.revokeObjectURL(objectUrl) // Clean up object URL
+        }
+        reader.onerror = () => {
+          // Fall back to object URL on data URL read failure
+          console.warn('Failed to read as data URL, using object URL')
+          setCanvasSize({ width: img.width, height: img.height })
+          setBackground({ type: 'image', imageUrl: objectUrl })
+        }
+        reader.readAsDataURL(file)
+      } else {
+        // Use object URL for very large images to avoid memory issues
+        console.log(`Using object URL for large image (${fileSizeMB.toFixed(1)}MB)`)
+        setCanvasSize({ width: img.width, height: img.height })
+        setBackground({ type: 'image', imageUrl: objectUrl })
+        // Note: Object URL will be invalidated on page refresh
+        // User should save their work frequently with large images
+      }
+    }
+    img.onerror = () => {
+      URL.revokeObjectURL(objectUrl)
+      alert('Failed to load image. The file may be corrupted or in an unsupported format.')
+    }
+    img.src = objectUrl
   }
 
   const handleSaveLayout = () => {
@@ -340,6 +421,8 @@ export default function Ribbon({
       setCanvasSize({ ...layout.canvasSize })
       if (layout.background) setBackground({ ...layout.background })
       setShowLoadModal(false)
+      // Clear history after loading a layout to start fresh
+      clearHistory()
     }
   }
 
@@ -429,6 +512,18 @@ export default function Ribbon({
         {activeTab === 'home' && (
           <>
             <Group label="Actions">
+              <ActionButton
+                icon={Undo2}
+                label="Undo"
+                onClick={undo}
+                disabled={!canUndo}
+              />
+              <ActionButton
+                icon={Redo2}
+                label="Redo"
+                onClick={redo}
+                disabled={!canRedo}
+              />
               <ActionButton
                 icon={Trash2}
                 label="Clear All"
@@ -520,12 +615,53 @@ export default function Ribbon({
                     </div>
                     <div className="flex gap-2 items-center">
                       <div className="flex bg-gray-100 dark:bg-gray-700 rounded-md p-1 border border-gray-200 dark:border-gray-600">
+                        {/* Bold Button */}
                         <button
-                          onClick={() => updateElement({ fontWeight: selectedElement.fontWeight === 'bold' ? 'normal' : 'bold' })}
+                          onClick={() => {
+                            if (textSelection.hasSelection && textSelection.elementId === selectedElement.id) {
+                              // Apply to selection
+                              applySelectionStyle({ fontWeight: 'bold' })
+                            } else {
+                              // Apply to whole element
+                              updateElement({ fontWeight: selectedElement.fontWeight === 'bold' ? 'normal' : 'bold' })
+                            }
+                          }}
                           className={`p-1.5 rounded transition-all w-7 h-7 sm:w-8 sm:h-8 flex items-center justify-center ${selectedElement.fontWeight === 'bold' ? 'bg-white dark:bg-gray-600 shadow-sm text-blue-600 dark:text-blue-400' : 'hover:bg-gray-200 dark:hover:bg-gray-600'}`}
-                          title="Bold"
+                          title={textSelection.hasSelection ? "Bold Selection (Ctrl+B)" : "Bold"}
                         >
-                          <span className="font-bold text-xs sm:text-sm">B</span>
+                          <Bold className="w-3.5 h-3.5 sm:w-4 sm:h-4" strokeWidth={2.5} />
+                        </button>
+                        {/* Italic Button */}
+                        <button
+                          onClick={() => {
+                            if (textSelection.hasSelection && textSelection.elementId === selectedElement.id) {
+                              // Apply to selection
+                              applySelectionStyle({ fontStyle: 'italic' })
+                            } else {
+                              // Apply to whole element
+                              updateElement({ fontStyle: selectedElement.fontStyle === 'italic' ? 'normal' : 'italic' })
+                            }
+                          }}
+                          className={`p-1.5 rounded transition-all w-7 h-7 sm:w-8 sm:h-8 flex items-center justify-center ${selectedElement.fontStyle === 'italic' ? 'bg-white dark:bg-gray-600 shadow-sm text-blue-600 dark:text-blue-400' : 'hover:bg-gray-200 dark:hover:bg-gray-600'}`}
+                          title={textSelection.hasSelection ? "Italic Selection (Ctrl+I)" : "Italic"}
+                        >
+                          <Italic className="w-3.5 h-3.5 sm:w-4 sm:h-4" strokeWidth={2.5} />
+                        </button>
+                        {/* Underline Button */}
+                        <button
+                          onClick={() => {
+                            if (textSelection.hasSelection && textSelection.elementId === selectedElement.id) {
+                              // Apply to selection
+                              applySelectionStyle({ textDecoration: 'underline' })
+                            } else {
+                              // Apply to whole element
+                              updateElement({ textDecoration: selectedElement.textDecoration === 'underline' ? '' : 'underline' })
+                            }
+                          }}
+                          className={`p-1.5 rounded transition-all w-7 h-7 sm:w-8 sm:h-8 flex items-center justify-center ${selectedElement.textDecoration === 'underline' ? 'bg-white dark:bg-gray-600 shadow-sm text-blue-600 dark:text-blue-400' : 'hover:bg-gray-200 dark:hover:bg-gray-600'}`}
+                          title={textSelection.hasSelection ? "Underline Selection (Ctrl+U)" : "Underline"}
+                        >
+                          <Underline className="w-3.5 h-3.5 sm:w-4 sm:h-4" strokeWidth={2.5} />
                         </button>
                       </div>
                       <div className="w-px h-6 bg-gray-300 dark:bg-gray-600" />
@@ -533,9 +669,17 @@ export default function Ribbon({
                         <input
                           type="color"
                           value={selectedElement.color}
-                          onChange={(e) => updateElement({ color: e.target.value })}
+                          onChange={(e) => {
+                            if (textSelection.hasSelection && textSelection.elementId === selectedElement.id) {
+                              // Apply to selection
+                              applySelectionStyle({ fill: e.target.value })
+                            } else {
+                              // Apply to whole element
+                              updateElement({ color: e.target.value })
+                            }
+                          }}
                           className="w-5 h-5 sm:w-6 sm:h-6 rounded cursor-pointer border-none p-0 bg-transparent"
-                          title="Text Color"
+                          title={textSelection.hasSelection ? "Selection Color" : "Text Color"}
                         />
                         <span className="text-[10px] sm:text-xs font-mono text-gray-500">{selectedElement.color}</span>
                       </div>

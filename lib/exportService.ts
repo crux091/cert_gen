@@ -2,8 +2,13 @@ import { fabric } from 'fabric'
 import jsPDF from 'jspdf'
 import JSZip from 'jszip'
 import { saveAs } from 'file-saver'
-import { CertificateElement, ExportOptions, CSVData, VariableBindings } from '@/types/certificate'
-import { replaceAllVariables, getAllUniqueVariables } from './variableParser'
+import { CertificateElement, ExportOptions, CSVData, VariableBindings, VariableStyles, RichTextStyles, CharacterStyle, CanvasBackground } from '@/types/certificate'
+import { replaceAllVariables, getAllUniqueVariables, extractVariables } from './variableParser'
+
+// CRITICAL: Disable Fabric.js retina scaling to prevent rendering issues
+if (typeof window !== 'undefined') {
+  (fabric as any).devicePixelRatio = 1
+}
 
 /**
  * Sanitize filename by replacing invalid characters
@@ -40,6 +45,412 @@ function getFabricCanvas(canvasElement: HTMLElement): fabric.Canvas | null {
   return null
 }
 
+function nextFrame(): Promise<void> {
+  return new Promise(resolve => {
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(() => resolve())
+    } else {
+      setTimeout(() => resolve(), 0)
+    }
+  })
+}
+
+function buildRowBindings(
+  csvData: CSVData,
+  variableBindings: VariableBindings,
+  row: Record<string, any>
+): Record<string, string> {
+  const bindings: Record<string, string> = {}
+
+  // Auto-bind: [HeaderName] -> row[HeaderName]
+  for (const header of csvData.headers) {
+    bindings[header] = String(row?.[header] ?? '')
+  }
+
+  // Explicit bindings override/extend: [VarName] -> row[ColumnName]
+  for (const [varName, columnName] of Object.entries(variableBindings)) {
+    bindings[varName] = String(row?.[columnName] ?? '')
+  }
+
+  return bindings
+}
+
+function buildLineStartIndices(text: string): number[] {
+  const starts: number[] = [0]
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === '\n') {
+      starts.push(i + 1)
+    }
+  }
+  return starts
+}
+
+function globalIndexToLineChar(lineStarts: number[], globalIndex: number): { line: number; ch: number } {
+  // Find the greatest lineStart <= globalIndex
+  let line = 0
+  for (let i = 0; i < lineStarts.length; i++) {
+    if (lineStarts[i] <= globalIndex) {
+      line = i
+    } else {
+      break
+    }
+  }
+  return { line, ch: globalIndex - lineStarts[line] }
+}
+
+function getStyleAtGlobalIndex(
+  styles: RichTextStyles | undefined,
+  text: string,
+  globalIndex: number
+): CharacterStyle | undefined {
+  if (!styles) return undefined
+  const lineStarts = buildLineStartIndices(text)
+  const { line, ch } = globalIndexToLineChar(lineStarts, globalIndex)
+  return styles?.[line]?.[ch]
+}
+
+type ReplacementSpan = {
+  originalStart: number
+  originalEnd: number
+  newStart: number
+  newEnd: number
+  name: string
+  occurrenceIndex: number
+  replacement: string
+}
+
+function remapRichTextStylesForReplacements(
+  originalText: string,
+  replacedText: string,
+  originalStyles: RichTextStyles | undefined,
+  variableStyles: VariableStyles | undefined,
+  replacements: ReplacementSpan[]
+): RichTextStyles | undefined {
+  if (!originalStyles && !variableStyles) return undefined
+
+  const newStyles: RichTextStyles = {}
+
+  const originalLineStarts = buildLineStartIndices(originalText)
+  const newLineStarts = buildLineStartIndices(replacedText)
+
+  const replacementsSorted = [...replacements].sort((a, b) => a.originalStart - b.originalStart)
+
+  const deltaBefore = (originalIndex: number): number => {
+    let delta = 0
+    for (const r of replacementsSorted) {
+      if (r.originalEnd <= originalIndex) {
+        delta += (r.newEnd - r.newStart) - (r.originalEnd - r.originalStart)
+      } else {
+        break
+      }
+    }
+    return delta
+  }
+
+  const isWithinReplacement = (originalIndex: number): ReplacementSpan | null => {
+    for (const r of replacementsSorted) {
+      if (originalIndex >= r.originalStart && originalIndex < r.originalEnd) return r
+      if (r.originalStart > originalIndex) break
+    }
+    return null
+  }
+
+  // 1) Shift/copy all non-variable original styles
+  if (originalStyles) {
+    for (const [lineKey, lineMap] of Object.entries(originalStyles)) {
+      const lineIndex = Number(lineKey)
+      const lineStart = originalLineStarts[lineIndex] ?? 0
+      for (const [chKey, style] of Object.entries(lineMap)) {
+        const chIndex = Number(chKey)
+        const originalGlobal = lineStart + chIndex
+
+        if (isWithinReplacement(originalGlobal)) {
+          continue
+        }
+
+        const newGlobal = originalGlobal + deltaBefore(originalGlobal)
+        if (newGlobal < 0) continue
+        if (newGlobal >= replacedText.length) continue
+
+        const { line, ch } = globalIndexToLineChar(newLineStarts, newGlobal)
+        if (!newStyles[line]) newStyles[line] = {}
+        newStyles[line][ch] = { ...(newStyles[line][ch] || {}), ...(style as CharacterStyle) }
+      }
+    }
+  }
+
+  // 2) Apply variable occurrence styles (or fallback to placeholder's first-char style)
+  for (const r of replacementsSorted) {
+    const varKey = `${r.name}_${r.occurrenceIndex}`
+    const fallback = getStyleAtGlobalIndex(originalStyles, originalText, r.originalStart)
+    const varStyle = (variableStyles && variableStyles[varKey]) || fallback
+    if (!varStyle) continue
+
+    for (let i = 0; i < r.replacement.length; i++) {
+      const newGlobal = r.newStart + i
+      if (newGlobal < 0) continue
+      if (newGlobal >= replacedText.length) continue
+      const { line, ch } = globalIndexToLineChar(newLineStarts, newGlobal)
+      if (!newStyles[line]) newStyles[line] = {}
+      newStyles[line][ch] = { ...(newStyles[line][ch] || {}), ...(varStyle as CharacterStyle) }
+    }
+  }
+
+  return Object.keys(newStyles).length > 0 ? newStyles : undefined
+}
+
+function computeTextWithRowBindings(el: CertificateElement, rowBindings: Record<string, string>): { text: string; styles?: RichTextStyles } {
+  const originalText = el.content
+  // IMPORTANT: Do not rely on el.hasVariables.
+  // Previews replace variables even when this flag is missing/false.
+  const variables = extractVariables(originalText)
+  const hasVariables = variables.length > 0
+  const replacedText = hasVariables ? replaceAllVariables(originalText, rowBindings) : originalText
+
+  if (!hasVariables) {
+    return { text: replacedText, styles: el.styles }
+  }
+
+  const sortedVars = [...variables].sort((a, b) => a.startIndex - b.startIndex)
+  const variableOccurrences: Record<string, number> = {}
+
+  let offset = 0
+  const spans: ReplacementSpan[] = []
+  for (const v of sortedVars) {
+    const replacement = String(rowBindings[v.name] ?? `[${v.name}]`)
+    const originalLen = v.endIndex - v.startIndex
+    const newLen = replacement.length
+
+    const occurrenceIndex = variableOccurrences[v.name] || 0
+    variableOccurrences[v.name] = occurrenceIndex + 1
+
+    spans.push({
+      originalStart: v.startIndex,
+      originalEnd: v.endIndex,
+      newStart: v.startIndex + offset,
+      newEnd: v.startIndex + offset + newLen,
+      name: v.name,
+      occurrenceIndex,
+      replacement,
+    })
+
+    offset += newLen - originalLen
+  }
+
+  const styles = remapRichTextStylesForReplacements(
+    originalText,
+    replacedText,
+    el.styles,
+    el.variableStyles,
+    spans
+  )
+
+  return { text: replacedText, styles }
+}
+
+async function renderCertificateToStaticCanvas(
+  elements: CertificateElement[],
+  canvasSize: { width: number; height: number },
+  background: CanvasBackground,
+  rowBindings?: Record<string, string>
+): Promise<fabric.StaticCanvas> {
+  const exportCanvasEl = document.createElement('canvas')
+  exportCanvasEl.width = canvasSize.width
+  exportCanvasEl.height = canvasSize.height
+
+  const staticCanvas = new fabric.StaticCanvas(exportCanvasEl, {
+    width: canvasSize.width,
+    height: canvasSize.height,
+    backgroundColor: background.type === 'color' ? background.color || '#ffffff' : '#ffffff',
+  })
+
+  // Background image
+  if (background.type === 'image' && background.imageUrl) {
+    await new Promise<void>((resolve) => {
+      fabric.Image.fromURL(
+        background.imageUrl!,
+        (img) => {
+          if (!img || !img.width || !img.height) {
+            resolve()
+            return
+          }
+          img.set({
+            scaleX: canvasSize.width / (img.width || 1),
+            scaleY: canvasSize.height / (img.height || 1),
+            left: 0,
+            top: 0,
+            originX: 'left',
+            originY: 'top',
+          })
+          staticCanvas.setBackgroundImage(img, () => resolve())
+        },
+        { crossOrigin: 'anonymous' }
+      )
+    })
+  }
+
+  const sorted = [...elements].sort((a, b) => (a.zIndex || 0) - (b.zIndex || 0))
+
+  for (const el of sorted) {
+    if (el.type === 'text') {
+      // If a text element is exactly a single variable and that variable resolves to an image URL,
+      // render it as an image (common pattern for photo/logo placeholders).
+      if (rowBindings) {
+        const vars = extractVariables(el.content)
+        if (
+          vars.length === 1 &&
+          vars[0].startIndex === 0 &&
+          vars[0].endIndex === el.content.length
+        ) {
+          const value = String(rowBindings[vars[0].name] ?? '')
+          if (isImageURL(value)) {
+            try {
+              const img = await loadImageFromURL(value)
+              const imgWidth = img.width || 1
+              const imgHeight = img.height || 1
+              const targetWidth = el.width || imgWidth
+              const targetHeight = el.height || imgHeight
+
+              img.set({
+                left: el.x,
+                top: el.y,
+                scaleX: (targetWidth / imgWidth) * (el.scaleX || 1),
+                scaleY: (targetHeight / imgHeight) * (el.scaleY || 1),
+                angle: el.angle || 0,
+                opacity: el.opacity ?? 1,
+                originX: 'left',
+                originY: 'top',
+              })
+              staticCanvas.add(img)
+              continue
+            } catch (e) {
+              console.warn('Failed to load image variable for export:', e)
+            }
+          }
+        }
+      }
+
+      const { text, styles } = rowBindings ? computeTextWithRowBindings(el, rowBindings) : { text: el.content, styles: el.styles }
+
+      // Text must never be scaled (prevents stretched/squashed glyphs).
+      // Convert any legacy scale into true container dimensions.
+      const exportWidth = Math.round((el.width || 200) * (el.scaleX || 1))
+      const exportHeight = typeof el.height === 'number' ? Math.round(el.height * (el.scaleY || 1)) : undefined
+
+      const textbox = new fabric.Textbox(text, {
+        left: el.x,
+        top: el.y,
+        width: exportWidth,
+        height: exportHeight,
+        fontSize: el.fontSize || 24,
+        fontFamily: el.fontFamily || 'Arial',
+        fontWeight: el.fontWeight || 'normal',
+        fontStyle: el.fontStyle || 'normal',
+        underline: el.textDecoration === 'underline',
+        fill: el.color || '#000000',
+        textAlign: el.alignment || 'left',
+        angle: el.angle || 0,
+        scaleX: 1,
+        scaleY: 1,
+        opacity: el.opacity ?? 1,
+        originX: 'left',
+        originY: 'top',
+        splitByGrapheme: false,
+      })
+
+      if (styles) {
+        textbox.styles = styles as any
+      }
+
+      staticCanvas.add(textbox)
+    } else if (el.type === 'image') {
+      if (!el.content) continue
+      try {
+        const img = await loadImageFromURL(el.content)
+        const imgWidth = img.width || 1
+        const imgHeight = img.height || 1
+        const targetWidth = el.width || imgWidth
+        const targetHeight = el.height || imgHeight
+
+        img.set({
+          left: el.x,
+          top: el.y,
+          scaleX: (targetWidth / imgWidth) * (el.scaleX || 1),
+          scaleY: (targetHeight / imgHeight) * (el.scaleY || 1),
+          angle: el.angle || 0,
+          opacity: el.opacity ?? 1,
+          originX: 'left',
+          originY: 'top',
+        })
+
+        staticCanvas.add(img)
+      } catch (e) {
+        console.warn('Failed to load image element for export:', e)
+      }
+    }
+  }
+
+  staticCanvas.renderAll()
+  // Give Fabric a frame to finalize text measurements
+  await nextFrame()
+  staticCanvas.renderAll()
+
+  return staticCanvas
+}
+
+async function exportStaticCanvasToBlob(
+  canvas: fabric.StaticCanvas,
+  format: 'png' | 'pdf',
+  options: ExportOptions = { dpi: 300 }
+): Promise<Blob> {
+  const multiplier = options.multiplier || (options.dpi || 300) / 96
+
+  const dataURL = canvas.toDataURL({
+    format: 'png',
+    quality: options.quality || 1,
+    multiplier,
+    enableRetinaScaling: false,
+  })
+
+  if (format === 'png') {
+    const response = await fetch(dataURL)
+    return response.blob()
+  }
+
+  const width = canvas.getWidth()
+  const height = canvas.getHeight()
+  const pdf = new jsPDF({
+    orientation: width > height ? 'landscape' : 'portrait',
+    unit: 'px',
+    format: [width, height],
+  })
+  pdf.addImage(dataURL, 'PNG', 0, 0, width, height)
+  return pdf.output('blob')
+}
+
+export async function exportRowWithVariables(
+  row: Record<string, any>,
+  csvData: CSVData,
+  variableBindings: VariableBindings,
+  elements: CertificateElement[],
+  canvasSize: { width: number; height: number },
+  background: CanvasBackground,
+  filename: string,
+  format: 'png' | 'pdf',
+  options: ExportOptions = { dpi: 300, quality: 1 }
+): Promise<void> {
+  try {
+    await document.fonts.ready
+  } catch (e) {
+    console.warn('Font loading wait failed', e)
+  }
+
+  const rowBindings = buildRowBindings(csvData, variableBindings, row)
+  const staticCanvas = await renderCertificateToStaticCanvas(elements, canvasSize, background, rowBindings)
+  const blob = await exportStaticCanvasToBlob(staticCanvas, format, options)
+  saveAs(blob, sanitizeFilename(filename))
+}
+
 /**
  * Export certificate as PNG using Fabric.js
  * @param canvasElement - The container element with Fabric.js canvas
@@ -68,6 +479,21 @@ export async function exportToPNG(
 
   // Deselect all objects before export
   fabricCanvas.discardActiveObject()
+  
+  // Save current viewport state
+  const currentViewport = fabricCanvas.viewportTransform?.slice() || [1, 0, 0, 1, 0, 0]
+  const currentZoom = fabricCanvas.getZoom()
+  const currentWidth = fabricCanvas.getWidth()
+  const currentHeight = fabricCanvas.getHeight()
+  
+  // Get the content dimensions from canvas data attributes or use default
+  const contentWidth = (fabricCanvas as any)._contentWidth || currentWidth
+  const contentHeight = (fabricCanvas as any)._contentHeight || currentHeight
+  
+  // Reset viewport to 1:1 for export
+  fabricCanvas.setViewportTransform([1, 0, 0, 1, 0, 0])
+  fabricCanvas.setZoom(1)
+  fabricCanvas.setDimensions({ width: contentWidth, height: contentHeight }, { cssOnly: false, backstoreOnly: false })
   fabricCanvas.renderAll()
 
   // Export to data URL with high quality
@@ -77,6 +503,12 @@ export async function exportToPNG(
     multiplier: multiplier,
     enableRetinaScaling: false,
   })
+  
+  // Restore viewport state
+  fabricCanvas.setDimensions({ width: currentWidth, height: currentHeight }, { cssOnly: false, backstoreOnly: false })
+  fabricCanvas.setZoom(currentZoom)
+  fabricCanvas.setViewportTransform(currentViewport as any)
+  fabricCanvas.renderAll()
 
   // Convert data URL to blob and download
   fetch(dataURL)
@@ -116,6 +548,21 @@ export async function exportToPDF(
 
   // Deselect all objects before export
   fabricCanvas.discardActiveObject()
+  
+  // Save current viewport state
+  const currentViewport = fabricCanvas.viewportTransform?.slice() || [1, 0, 0, 1, 0, 0]
+  const currentZoom = fabricCanvas.getZoom()
+  const currentWidth = fabricCanvas.getWidth()
+  const currentHeight = fabricCanvas.getHeight()
+  
+  // Get the content dimensions from canvas data attributes or use default
+  const contentWidth = (fabricCanvas as any)._contentWidth || currentWidth
+  const contentHeight = (fabricCanvas as any)._contentHeight || currentHeight
+  
+  // Reset viewport to 1:1 for export
+  fabricCanvas.setViewportTransform([1, 0, 0, 1, 0, 0])
+  fabricCanvas.setZoom(1)
+  fabricCanvas.setDimensions({ width: contentWidth, height: contentHeight }, { cssOnly: false, backstoreOnly: false })
   fabricCanvas.renderAll()
 
   // Export to data URL
@@ -126,19 +573,25 @@ export async function exportToPDF(
     enableRetinaScaling: false,
   })
 
-  // Get canvas dimensions
-  const width = (fabricCanvas.width || 800) * multiplier
-  const height = (fabricCanvas.height || 600) * multiplier
+  // Get canvas dimensions for PDF
+  const width = contentWidth * multiplier
+  const height = contentHeight * multiplier
+  
+  // Restore viewport state
+  fabricCanvas.setDimensions({ width: currentWidth, height: currentHeight }, { cssOnly: false, backstoreOnly: false })
+  fabricCanvas.setZoom(currentZoom)
+  fabricCanvas.setViewportTransform(currentViewport as any)
+  fabricCanvas.renderAll()
 
   // Create PDF with exact canvas dimensions
   const pdf = new jsPDF({
     orientation: width > height ? 'landscape' : 'portrait',
     unit: 'px',
-    format: [width / multiplier, height / multiplier],
+    format: [contentWidth, contentHeight],
   })
 
   // Add image to PDF
-  pdf.addImage(dataURL, 'PNG', 0, 0, width / multiplier, height / multiplier)
+  pdf.addImage(dataURL, 'PNG', 0, 0, contentWidth, contentHeight)
   pdf.save(sanitizeFilename(filename))
 }
 
@@ -191,6 +644,19 @@ async function generateCertificateBlob(
 
   // Deselect all objects before export
   fabricCanvas.discardActiveObject()
+
+  // Save current viewport state and dimensions
+  const currentViewport = fabricCanvas.viewportTransform?.slice() || [1, 0, 0, 1, 0, 0]
+  const currentZoom = fabricCanvas.getZoom()
+  const currentWidth = fabricCanvas.getWidth()
+  const currentHeight = fabricCanvas.getHeight()
+  const contentWidth = (fabricCanvas as any)._contentWidth || currentWidth
+  const contentHeight = (fabricCanvas as any)._contentHeight || currentHeight
+
+  // Reset viewport to export the design area only
+  fabricCanvas.setViewportTransform([1, 0, 0, 1, 0, 0])
+  fabricCanvas.setZoom(1)
+  fabricCanvas.setDimensions({ width: contentWidth, height: contentHeight }, { cssOnly: false, backstoreOnly: false })
   fabricCanvas.renderAll()
 
   if (format === 'png') {
@@ -200,6 +666,12 @@ async function generateCertificateBlob(
       multiplier: multiplier,
       enableRetinaScaling: false,
     })
+
+    // Restore viewport
+    fabricCanvas.setDimensions({ width: currentWidth, height: currentHeight }, { cssOnly: false, backstoreOnly: false })
+    fabricCanvas.setZoom(currentZoom)
+    fabricCanvas.setViewportTransform(currentViewport as any)
+    fabricCanvas.renderAll()
 
     // Convert data URL to blob
     const response = await fetch(dataURL)
@@ -213,16 +685,23 @@ async function generateCertificateBlob(
       enableRetinaScaling: false,
     })
 
-    const width = (fabricCanvas.width || 800) * multiplier
-    const height = (fabricCanvas.height || 600) * multiplier
+    const width = contentWidth * multiplier
+    const height = contentHeight * multiplier
 
     const pdf = new jsPDF({
       orientation: width > height ? 'landscape' : 'portrait',
       unit: 'px',
-      format: [width / multiplier, height / multiplier],
+      format: [contentWidth, contentHeight],
     })
 
-    pdf.addImage(dataURL, 'PNG', 0, 0, width / multiplier, height / multiplier)
+    pdf.addImage(dataURL, 'PNG', 0, 0, contentWidth, contentHeight)
+
+    // Restore viewport
+    fabricCanvas.setDimensions({ width: currentWidth, height: currentHeight }, { cssOnly: false, backstoreOnly: false })
+    fabricCanvas.setZoom(currentZoom)
+    fabricCanvas.setViewportTransform(currentViewport as any)
+    fabricCanvas.renderAll()
+
     return pdf.output('blob')
   }
 }
@@ -432,148 +911,76 @@ export async function bulkExportWithVariables(
   csvData: CSVData,
   variableBindings: VariableBindings,
   elements: CertificateElement[],
-  setElements: (elements: CertificateElement[]) => void,
-  canvasElement: HTMLElement,
+  canvasSize: { width: number; height: number },
+  background: CanvasBackground,
   format: 'png' | 'pdf',
-  onProgress?: (current: number, total: number) => void
+  onProgress?: (current: number, total: number) => void,
+  options: ExportOptions = { dpi: 300, quality: 1 }
+): Promise<void> {
+  return bulkExportWithVariablesHeadless(
+    csvData,
+    variableBindings,
+    elements,
+    canvasSize,
+    background,
+    format,
+    onProgress,
+    options
+  )
+}
+
+/**
+ * Headless bulk export for the main UI. Uses the design canvas size + background
+ * and renders each row off-screen to guarantee the exported output matches the preview.
+ */
+export async function bulkExportWithVariablesHeadless(
+  csvData: CSVData,
+  variableBindings: VariableBindings,
+  elements: CertificateElement[],
+  canvasSize: { width: number; height: number },
+  background: CanvasBackground,
+  format: 'png' | 'pdf',
+  onProgress?: (current: number, total: number) => void,
+  options: ExportOptions = { dpi: 300, quality: 1 }
 ): Promise<void> {
   const zip = new JSZip()
-  const originalElements = JSON.parse(JSON.stringify(elements)) // Deep clone
   const extension = format === 'png' ? '.png' : '.pdf'
-  const fabricCanvas = getFabricCanvas(canvasElement)
 
-  if (!fabricCanvas) {
-    throw new Error('Fabric.js canvas not found')
+  try {
+    await document.fonts.ready
+  } catch (e) {
+    console.warn('Font loading wait failed', e)
   }
 
-  // Get all variables from text elements
-  const textElements = elements.filter(el => el.type === 'text')
-  const allTextContent = textElements.map(el => el.content).join(' ')
-  const allVariables = getAllUniqueVariables([allTextContent])
-  
-  // Auto-build bindings: variable name → column name (they're the same with new approach)
-  // Variables are now directly named after columns (e.g., [Name] maps to "Name" column)
-  const effectiveBindings: VariableBindings = {}
-  const unboundVars: string[] = []
-  
-  for (const varName of allVariables) {
-    if (csvData.headers.includes(varName)) {
-      effectiveBindings[varName] = varName // Variable name equals column name
-    } else {
-      unboundVars.push(varName)
-    }
-  }
-  
-  if (unboundVars.length > 0) {
-    throw new Error(`Unbound variables detected: ${unboundVars.map(v => `[${v}]`).join(', ')}. Click on variables in the canvas to bind them to columns.`)
-  }
-
-  // Check for mixed data types in bound columns
-  const boundColumns = Object.values(effectiveBindings)
+  // Validate bound columns for mixed image/text
+  const boundColumns = Object.values(variableBindings)
   for (const column of boundColumns) {
-    const values = csvData.rows.map(row => row[column])
+    const values = csvData.rows.map(r => r[column])
     const hasImages = values.some(v => isImageURL(String(v)))
     const hasText = values.some(v => !isImageURL(String(v)))
-    
     if (hasImages && hasText) {
       throw new Error(`Column "${column}" contains mixed data types (images and text). All values must be either images or text.`)
     }
   }
 
-  try {
-    for (let rowIndex = 0; rowIndex < csvData.rows.length; rowIndex++) {
-      const row = csvData.rows[rowIndex]
-      
-      // Validate row data - check for missing required values
-      for (const [varName, columnName] of Object.entries(effectiveBindings)) {
-        const value = row[columnName]
-        if (value === undefined || value === null || String(value).trim() === '') {
-          throw new Error(`Export failed: Missing data in column "${columnName}" for row ${rowIndex + 1}`)
-        }
-      }
+  for (let rowIndex = 0; rowIndex < csvData.rows.length; rowIndex++) {
+    const row = csvData.rows[rowIndex]
+    const rowBindings = buildRowBindings(csvData, variableBindings, row)
 
-      // Create row-specific bindings (variable name -> actual value)
-      const rowBindings: Record<string, string> = {}
-      Object.entries(effectiveBindings).forEach(([varName, columnName]) => {
-        rowBindings[varName] = String(row[columnName])
-      })
+    const staticCanvas = await renderCertificateToStaticCanvas(elements, canvasSize, background, rowBindings)
+    const blob = await exportStaticCanvasToBlob(staticCanvas, format, options)
 
-      // Update elements with variable replacements
-      const updatedElements = elements.map(el => {
-        if (el.type === 'text' && el.hasVariables) {
-          const replacedContent = replaceAllVariables(el.content, rowBindings)
-          return { ...el, content: replacedContent }
-        }
-        return el
-      })
+    const firstKey = Object.keys(variableBindings)[0] || csvData.headers[0]
+    const firstValue = firstKey ? rowBindings[firstKey] : `Row ${rowIndex + 1}`
+    const filename = sanitizeFilename(`Certificate - ${firstValue}${extension}`)
+    zip.file(filename, blob)
 
-      setElements(updatedElements)
+    if (onProgress) onProgress(rowIndex + 1, csvData.rows.length)
 
-      // Wait for Fabric.js to update and render
-      await new Promise(resolve => setTimeout(resolve, 500))
-
-      // Handle image replacements (if any variables are bound to image columns)
-      const fabricObjects = fabricCanvas.getObjects()
-      for (const [varName, columnName] of Object.entries(effectiveBindings)) {
-        const value = row[columnName]
-        if (isImageURL(String(value))) {
-          // Find textbox containing this variable and replace with image
-          const textObj = fabricObjects.find(obj => 
-            obj.type === 'textbox' && 
-            (obj as fabric.Textbox).text?.includes(`[${varName}]`)
-          ) as fabric.Textbox
-
-          if (textObj) {
-            try {
-              const img = await loadImageFromURL(String(value))
-              img.set({
-                left: textObj.left,
-                top: textObj.top,
-                scaleX: (textObj.width || 100) / (img.width || 1),
-                scaleY: (textObj.height || 100) / (img.height || 1),
-              })
-              
-              fabricCanvas.remove(textObj)
-              fabricCanvas.add(img)
-              fabricCanvas.renderAll()
-            } catch (error) {
-              console.error(`Failed to load image for [${varName}]:`, error)
-              throw new Error(`Failed to load image from URL in column "${columnName}": ${value}`)
-            }
-          }
-        }
-      }
-
-      // Generate certificate
-      const blob = await generateCertificateBlob(canvasElement, format)
-      
-      // Generate filename from first bound variable or row number
-      const firstVarName = Object.keys(effectiveBindings)[0]
-      const firstValue = firstVarName ? rowBindings[firstVarName] : `Row ${rowIndex + 1}`
-      const filename = sanitizeFilename(`Certificate - ${firstValue}${extension}`)
-      zip.file(filename, blob)
-
-      // Update progress
-      if (onProgress) {
-        onProgress(rowIndex + 1, csvData.rows.length)
-      }
-
-      // Restore original canvas before next iteration
-      fabricCanvas.clear()
-      fabricCanvas.renderAll()
-      await new Promise(resolve => setTimeout(resolve, 100))
-    }
-
-    // Restore original elements
-    setElements(originalElements)
-
-    // Generate and download zip
-    const zipBlob = await zip.generateAsync({ type: 'blob' })
-    saveAs(zipBlob, `certificates-${Date.now()}.zip`)
-  } catch (error) {
-    console.error('Bulk export with variables error:', error)
-    // Restore original elements on error
-    setElements(originalElements)
-    throw error
+    // Small yield to keep UI responsive
+    await new Promise(resolve => setTimeout(resolve, 0))
   }
+
+  const zipBlob = await zip.generateAsync({ type: 'blob' })
+  saveAs(zipBlob, `certificates-${Date.now()}.zip`)
 }

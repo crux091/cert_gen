@@ -1,30 +1,70 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useRef, useCallback } from 'react'
 import Header from '@/components/Header'
 import Ribbon from '@/components/Ribbon'
 import CanvasEditor from '@/components/CanvasEditor'
 import SlidePreviewPanel from '@/components/SlidePreviewPanel'
-import { CertificateElement, CanvasBackground, CSVData, VariableBindings } from '@/types/certificate'
+import { CertificateElement, CanvasBackground, CSVData, VariableBindings, TextSelection, CharacterStyle } from '@/types/certificate'
+import { useHistoryManager } from '@/lib/useHistoryManager'
 
 export default function Home() {
-  const [background, setBackground] = useState<CanvasBackground>({
-    type: 'color',
-    color: '#ffffff',
+  // Use history manager for elements, background, and canvasSize
+  const {
+    elements,
+    background,
+    canvasSize,
+    setElements,
+    setBackground,
+    setCanvasSize,
+    setElementsDirect,
+    setBackgroundDirect,
+    setCanvasSizeDirect,
+    pushToHistory,
+    pushToHistoryDebounced,
+    undo,
+    redo,
+    canUndo,
+    canRedo,
+    clearHistory,
+  } = useHistoryManager({
+    initialElements: [],
+    initialBackground: {
+      type: 'color',
+      color: '#ffffff',
+    },
+    initialCanvasSize: { width: 800, height: 600 },
   })
-  const [elements, setElements] = useState<CertificateElement[]>([])
+
   const [selectedElementId, setSelectedElementId] = useState<string | null>(null)
-  const [canvasSize, setCanvasSize] = useState({ width: 800, height: 600 })
   const [csvData, setCsvData] = useState<CSVData | null>(null)
   const [variableBindings, setVariableBindings] = useState<VariableBindings>({})
   
   // Preview panel state
   const [selectedPreviewIndex, setSelectedPreviewIndex] = useState<number | null>(null)
   
+  // Text selection state for inline formatting
+  const [textSelection, setTextSelection] = useState<TextSelection>({
+    elementId: null,
+    start: 0,
+    end: 0,
+    hasSelection: false,
+  })
+  
+  // Ref to access canvas editor's applySelectionStyle function
+  const applySelectionStyleRef = useRef<((style: CharacterStyle) => void) | null>(null)
+  
   // Get preview row data when a preview is selected
   const previewRowData = selectedPreviewIndex !== null && csvData 
     ? csvData.rows[selectedPreviewIndex] 
     : null
+  
+  // Callback to apply style to selected text
+  const applySelectionStyle = useCallback((style: CharacterStyle) => {
+    if (applySelectionStyleRef.current) {
+      applySelectionStyleRef.current(style)
+    }
+  }, [])
 
   return (
     <div className="h-screen bg-gray-100 dark:bg-gray-900 transition-colors flex flex-col overflow-hidden">
@@ -44,6 +84,14 @@ export default function Home() {
           setCsvData={setCsvData}
           variableBindings={variableBindings}
           setVariableBindings={setVariableBindings}
+          selectedPreviewIndex={selectedPreviewIndex}
+          undo={undo}
+          redo={redo}
+          canUndo={canUndo}
+          canRedo={canRedo}
+          clearHistory={clearHistory}
+          textSelection={textSelection}
+          applySelectionStyle={applySelectionStyle}
         />
       </div>
       
@@ -65,7 +113,7 @@ export default function Home() {
         <div className="flex-1 overflow-auto">
           <CanvasEditor
             elements={elements}
-            setElements={setElements}
+            setElements={setElementsDirect}
             selectedElementId={selectedElementId}
             setSelectedElementId={setSelectedElementId}
             canvasSize={canvasSize}
@@ -74,6 +122,12 @@ export default function Home() {
             variableBindings={variableBindings}
             setVariableBindings={setVariableBindings}
             previewRowData={previewRowData}
+            pushToHistory={pushToHistory}
+            pushToHistoryDebounced={pushToHistoryDebounced}
+            onUndo={undo}
+            onRedo={redo}
+            setTextSelection={setTextSelection}
+            applySelectionStyleRef={applySelectionStyleRef}
           />
         </div>
       </main>
