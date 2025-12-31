@@ -2,6 +2,11 @@ import * as XLSX from 'xlsx'
 import { fabric } from 'fabric'
 import { CertificateElement } from '@/types/certificate'
 
+// CRITICAL: Disable Fabric.js retina scaling to prevent rendering issues
+if (typeof window !== 'undefined') {
+  (fabric as any).devicePixelRatio = 1
+}
+
 export interface EmailRecipient {
   email: string
   name: string

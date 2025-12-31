@@ -303,23 +303,73 @@ export default function Ribbon({
       alert('Please upload an image file')
       return
     }
-    const reader = new FileReader()
-    reader.onload = (event) => {
-      const imageUrl = event.target?.result as string
-
-      // Load image to get dimensions and auto-resize canvas
-      const img = new Image()
-      img.onload = () => {
-        setCanvasSize({ width: img.width, height: img.height })
-        setBackground({ type: 'image', imageUrl })
+    
+    // Warn for very large files (>20MB)
+    const fileSizeMB = file.size / (1024 * 1024)
+    if (fileSizeMB > 20) {
+      const proceed = confirm(
+        `This image is ${fileSizeMB.toFixed(1)}MB which may cause performance issues. ` +
+        `For best results, consider using an image under 20MB. Continue anyway?`
+      )
+      if (!proceed) {
+        // Reset file input
+        if (e.target) e.target.value = ''
+        return
       }
-      img.onerror = () => {
-        alert('Failed to load image dimensions')
-        setBackground({ type: 'image', imageUrl })
-      }
-      img.src = imageUrl
     }
-    reader.readAsDataURL(file)
+    
+    // Use Object URL for better memory handling with large images
+    // Object URLs are more efficient than data URLs for large files
+    const objectUrl = URL.createObjectURL(file)
+    
+    // Load image to get dimensions
+    const img = new Image()
+    img.onload = () => {
+      // Warn for very large dimensions
+      if (img.width > 8000 || img.height > 8000) {
+        const proceed = confirm(
+          `This image has very large dimensions (${img.width}x${img.height}px) which may cause ` +
+          `rendering issues in some browsers. For best results, consider using an image under 8000px. Continue anyway?`
+        )
+        if (!proceed) {
+          URL.revokeObjectURL(objectUrl)
+          return
+        }
+      }
+      
+      // For very large images, convert to data URL to ensure persistence
+      // (Object URLs are revoked when the page refreshes)
+      // But for images under 10MB, use data URL; for larger, keep object URL
+      if (fileSizeMB <= 10) {
+        // Use data URL for smaller images (more portable, survives refresh)
+        const reader = new FileReader()
+        reader.onload = (event) => {
+          const dataUrl = event.target?.result as string
+          setCanvasSize({ width: img.width, height: img.height })
+          setBackground({ type: 'image', imageUrl: dataUrl })
+          URL.revokeObjectURL(objectUrl) // Clean up object URL
+        }
+        reader.onerror = () => {
+          // Fall back to object URL on data URL read failure
+          console.warn('Failed to read as data URL, using object URL')
+          setCanvasSize({ width: img.width, height: img.height })
+          setBackground({ type: 'image', imageUrl: objectUrl })
+        }
+        reader.readAsDataURL(file)
+      } else {
+        // Use object URL for very large images to avoid memory issues
+        console.log(`Using object URL for large image (${fileSizeMB.toFixed(1)}MB)`)
+        setCanvasSize({ width: img.width, height: img.height })
+        setBackground({ type: 'image', imageUrl: objectUrl })
+        // Note: Object URL will be invalidated on page refresh
+        // User should save their work frequently with large images
+      }
+    }
+    img.onerror = () => {
+      URL.revokeObjectURL(objectUrl)
+      alert('Failed to load image. The file may be corrupted or in an unsupported format.')
+    }
+    img.src = objectUrl
   }
 
   const handleSaveLayout = () => {

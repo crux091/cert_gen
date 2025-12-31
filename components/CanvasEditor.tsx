@@ -6,6 +6,12 @@ import { CertificateElement, CanvasBackground, CSVData, VariableBindings, TextSe
 import { Dispatch, SetStateAction } from 'react'
 import { hasVariables, extractVariables, replaceAllVariables } from '@/lib/variableParser'
 
+// CRITICAL: Disable Fabric.js retina scaling to prevent 1/4 canvas rendering issue
+// This must be set BEFORE any canvas is created
+if (typeof window !== 'undefined') {
+  (fabric as any).devicePixelRatio = 1
+}
+
 // Generate consistent colors for variable names (like syntax highlighting)
 const VARIABLE_COLORS = [
   '#e91e63', // pink
@@ -28,6 +34,113 @@ function getVariableColor(variableName: string): string {
     hash = hash & hash // Convert to 32bit integer
   }
   return VARIABLE_COLORS[Math.abs(hash) % VARIABLE_COLORS.length]
+}
+
+// Image loading constants
+const IMAGE_LOAD_TIMEOUT = 30000 // 30 seconds timeout for large images
+
+// Utility function to verify image data URL can be loaded
+function loadAndVerifyImage(imageUrl: string, timeout: number = IMAGE_LOAD_TIMEOUT): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    let timeoutId: NodeJS.Timeout | null = null
+    
+    const cleanup = () => {
+      if (timeoutId) {
+        clearTimeout(timeoutId)
+        timeoutId = null
+      }
+    }
+    
+    timeoutId = setTimeout(() => {
+      cleanup()
+      img.src = '' // Cancel loading
+      reject(new Error('Image load timeout'))
+    }, timeout)
+    
+    img.onload = () => {
+      cleanup()
+      // Verify image has valid dimensions
+      if (img.width > 0 && img.height > 0) {
+        resolve(img)
+      } else {
+        reject(new Error('Image has invalid dimensions'))
+      }
+    }
+    
+    img.onerror = () => {
+      cleanup()
+      reject(new Error('Failed to load image'))
+    }
+    
+    img.src = imageUrl
+  })
+}
+
+// Safely load fabric.Image with verification and timeout
+function loadFabricImageSafe(
+  imageUrl: string, 
+  timeout: number = IMAGE_LOAD_TIMEOUT
+): Promise<fabric.Image> {
+  return new Promise((resolve, reject) => {
+    let timeoutId: NodeJS.Timeout | null = null
+    let resolved = false
+    
+    const cleanup = () => {
+      if (timeoutId) {
+        clearTimeout(timeoutId)
+        timeoutId = null
+      }
+    }
+    
+    timeoutId = setTimeout(() => {
+      if (!resolved) {
+        cleanup()
+        reject(new Error('Fabric image load timeout'))
+      }
+    }, timeout)
+    
+    fabric.Image.fromURL(imageUrl, (img) => {
+      resolved = true
+      cleanup()
+      
+      // Verify the image was loaded successfully
+      if (!img || !img.width || !img.height || img.width === 0 || img.height === 0) {
+        reject(new Error('Fabric failed to load image properly'))
+        return
+      }
+      
+      resolve(img)
+    }, { crossOrigin: 'anonymous' })
+  })
+}
+
+// Helper function to strip fill colors from styles (fill is for syntax highlighting only)
+function stripFillFromStyles(styles: Record<number, Record<number, any>> | undefined): Record<number, Record<number, any>> {
+  if (!styles) return {}
+  
+  const cleanedStyles: Record<number, Record<number, any>> = {}
+  
+  Object.entries(styles).forEach(([lineIdx, lineStyles]) => {
+    const lineIndex = parseInt(lineIdx)
+    if (typeof lineStyles === 'object' && lineStyles !== null) {
+      Object.entries(lineStyles).forEach(([charIdx, charStyle]) => {
+        const charIndex = parseInt(charIdx)
+        if (charStyle && typeof charStyle === 'object') {
+          // Copy style but exclude fill
+          const { fill, ...styleWithoutFill } = charStyle
+          if (Object.keys(styleWithoutFill).length > 0) {
+            if (!cleanedStyles[lineIndex]) {
+              cleanedStyles[lineIndex] = {}
+            }
+            cleanedStyles[lineIndex][charIndex] = styleWithoutFill
+          }
+        }
+      })
+    }
+  })
+  
+  return cleanedStyles
 }
 
 interface CanvasEditorProps {
@@ -67,9 +180,16 @@ export default function CanvasEditor({
   setTextSelection,
   applySelectionStyleRef,
 }: CanvasEditorProps) {
-  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const canvasHostRef = useRef<HTMLDivElement>(null)
+  const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const fabricCanvasRef = useRef<fabric.Canvas | null>(null)
   const [isReady, setIsReady] = useState(false)
+  
+  // Background loading state
+  const [isBackgroundLoading, setIsBackgroundLoading] = useState(false)
+  const [backgroundError, setBackgroundError] = useState<string | null>(null)
+  const lastSuccessfulBackgroundRef = useRef<fabric.Image | null>(null)
+  const backgroundLoadIdRef = useRef<number>(0)
   
   // Preview mode: when previewRowData is set, the canvas is read-only
   const isPreviewMode = previewRowData !== null && previewRowData !== undefined
@@ -289,9 +409,26 @@ export default function CanvasEditor({
           }
         })
         
+        // Strip fill colors from newStyles before saving (they're variable syntax highlighting, not user styles)
+        const stylesToSave: Record<number, Record<number, any>> = {}
+        Object.entries(newStyles).forEach(([lineIdx, lineStyles]) => {
+          const lineIndex = parseInt(lineIdx)
+          Object.entries(lineStyles).forEach(([charIdx, charStyle]) => {
+            const charIndex = parseInt(charIdx)
+            // Copy style but exclude fill
+            const { fill, ...styleWithoutFill } = charStyle || {}
+            if (Object.keys(styleWithoutFill).length > 0) {
+              if (!stylesToSave[lineIndex]) {
+                stylesToSave[lineIndex] = {}
+              }
+              stylesToSave[lineIndex][charIndex] = styleWithoutFill
+            }
+          })
+        })
+        
         return { 
           ...el, 
-          styles: newStyles,
+          styles: Object.keys(stylesToSave).length > 0 ? stylesToSave : undefined,
           variableStyles: Object.keys(mergedVarStyles).length > 0 ? mergedVarStyles : undefined
         }
       }))
@@ -353,11 +490,28 @@ export default function CanvasEditor({
 
   // Initialize Fabric.js canvas
   useEffect(() => {
-    if (!canvasRef.current || fabricCanvasRef.current) return
+    const host = canvasHostRef.current
+    if (!host || fabricCanvasRef.current) return
 
-    const canvas = new fabric.Canvas(canvasRef.current, {
-      width: canvasSize.width,
-      height: canvasSize.height,
+    // IMPORTANT:
+    // Fabric mutates the DOM around the canvas (wraps it, adds upper canvas + hidden textarea).
+    // If React owns the <canvas> element, React reconciliation can crash with
+    // "Failed to execute 'insertBefore'" when Fabric has moved/replaced nodes.
+    // To avoid that, we create/attach the <canvas> imperatively inside a stable host div.
+    host.innerHTML = ''
+    const canvasEl = document.createElement('canvas')
+    canvasEl.id = 'certificate-canvas'
+    host.appendChild(canvasEl)
+    canvasRef.current = canvasEl
+    
+    // Use container size for the canvas element (display size)
+    const container = containerRef.current
+    const containerWidth = container?.offsetWidth || 800
+    const containerHeight = container?.offsetHeight || 600
+
+    const canvas = new fabric.Canvas(canvasEl, {
+      width: containerWidth,
+      height: containerHeight,
       backgroundColor: background.type === 'color' ? background.color || '#ffffff' : '#ffffff',
       preserveObjectStacking: true,
       selection: true,
@@ -367,9 +521,10 @@ export default function CanvasEditor({
 
     // Store canvas instance on the canvas element for export access
     // @ts-ignore
-    canvasRef.current.__fabricCanvas = canvas
+    canvasEl.__fabricCanvas = canvas
 
     setIsReady(true)
+    // fitCanvasToContainer will be called by the isReady effect
 
     // Handle object selection
     canvas.on('selection:created', (e) => {
@@ -425,11 +580,6 @@ export default function CanvasEditor({
         // Store original position and canvas dimensions
         obj.data.originalLeft = obj.left
         obj.data.originalTop = obj.top
-        // Lock canvas dimensions during editing
-        canvas.setDimensions({
-          width: canvasSize.width,
-          height: canvasSize.height,
-        })
         // Ensure textbox width doesn't exceed canvas bounds
         const maxWidth = canvasSize.width * 0.8
         obj.set({ 
@@ -451,11 +601,6 @@ export default function CanvasEditor({
           left: obj.data.originalLeft || obj.left,
           top: obj.data.originalTop || obj.top,
         })
-        // Ensure canvas dimensions remain fixed
-        canvas.setDimensions({
-          width: canvasSize.width,
-          height: canvasSize.height,
-        })
         canvas.renderAll()
       }
     })
@@ -469,12 +614,6 @@ export default function CanvasEditor({
       if (obj.width && obj.width !== maxWidth) {
         obj.set({ width: maxWidth })
       }
-
-      // Lock canvas dimensions during typing
-      canvas.setDimensions({
-        width: canvasSize.width,
-        height: canvasSize.height,
-      })
 
       // Use debounced history push for text changes
       pushToHistoryDebounced()
@@ -638,6 +777,8 @@ export default function CanvasEditor({
       document.removeEventListener('keydown', handleKeyDown)
       canvas.dispose()
       fabricCanvasRef.current = null
+      canvasRef.current = null
+      host.innerHTML = ''
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []) // Only initialize once
@@ -684,10 +825,10 @@ export default function CanvasEditor({
       const pointer = canvas.getPointer(mouseEvent)
       
       // Calculate popup position near the click
-      const canvasEl = canvasRef.current
-      if (!canvasEl) return
-      
-      const canvasRect = canvasEl.getBoundingClientRect()
+      const domCanvas = (canvas as any).upperCanvasEl || (canvas as any).lowerCanvasEl || canvasRef.current
+      if (!domCanvas) return
+
+      const canvasRect = (domCanvas as HTMLCanvasElement).getBoundingClientRect()
       const popupX = canvasRect.left + pointer.x
       const popupY = canvasRect.top + pointer.y + 20
 
@@ -992,14 +1133,34 @@ export default function CanvasEditor({
   // Update canvas size and background
   useEffect(() => {
     const canvas = fabricCanvasRef.current
-    if (!canvas) return
+    const container = containerRef.current
+    if (!canvas || !container) return
 
-    canvas.setDimensions({
-      width: canvasSize.width,
-      height: canvasSize.height,
-    })
+    // Set canvas element dimensions to match container for display
+    const containerWidth = container.offsetWidth
+    const containerHeight = container.offsetHeight
+    
+    canvas.setDimensions(
+      { width: containerWidth, height: containerHeight },
+      { cssOnly: false, backstoreOnly: false }
+    )
+    canvas.clipPath = undefined
+    canvas.calcOffset()
+    
+    // fitWorkspaceToScreen will be called by the isReady effect or resize observer
 
     if (background.type === 'color') {
+      // Clear any background error when switching to color
+      setBackgroundError(null)
+      setIsBackgroundLoading(false)
+      
+      // Dispose of previous background image to free memory
+      const prevBg = canvas.backgroundImage as fabric.Image | null
+      if (prevBg && typeof prevBg.dispose === 'function') {
+        prevBg.dispose()
+      }
+      lastSuccessfulBackgroundRef.current = null
+      
       canvas.setBackgroundColor(background.color || '#ffffff', () => {
         canvas.renderAll()
       })
@@ -1007,45 +1168,108 @@ export default function CanvasEditor({
         canvas.renderAll()
       })
     } else if (background.type === 'image' && background.imageUrl) {
-      fabric.Image.fromURL(background.imageUrl, (img) => {
-        // Scale to fit canvas exactly while maintaining aspect ratio
-        const scaleX = canvasSize.width / (img.width || 1)
-        const scaleY = canvasSize.height / (img.height || 1)
-        img.set({
-          scaleX: scaleX,
-          scaleY: scaleY,
-          left: 0,
-          top: 0,
-          originX: 'left',
-          originY: 'top',
-          selectable: false,
-          evented: false,
-          lockMovementX: true,
-          lockMovementY: true,
-          lockRotation: true,
-          lockScalingX: true,
-          lockScalingY: true,
-          hasControls: false,
-          hasBorders: false,
-          absolutePositioned: true,
-        })
-        canvas.setBackgroundImage(img, () => {
-          canvas.renderAll()
-        }, {
-          // Ensure background is clipped to canvas bounds
-          crossOrigin: 'anonymous',
-        })
-      }, { crossOrigin: 'anonymous' })
+      // Increment load ID to track this specific load operation
+      const loadId = ++backgroundLoadIdRef.current
+      
+      const loadBackgroundImage = async () => {
+        setIsBackgroundLoading(true)
+        setBackgroundError(null)
+        
+        try {
+          // First verify the image can be loaded
+          await loadAndVerifyImage(background.imageUrl!)
+          
+          // Check if this load operation is still current
+          if (loadId !== backgroundLoadIdRef.current) {
+            console.log('Background load cancelled - newer load in progress')
+            return
+          }
+          
+          // Load with Fabric.js
+          const img = await loadFabricImageSafe(background.imageUrl!)
+          
+          // Check again if still current
+          if (loadId !== backgroundLoadIdRef.current) {
+            console.log('Background load cancelled after fabric load - newer load in progress')
+            if (img && typeof img.dispose === 'function') {
+              img.dispose()
+            }
+            return
+          }
+          
+          // Dispose of previous background image to free memory
+          const prevBg = canvas.backgroundImage as fabric.Image | null
+          if (prevBg && typeof prevBg.dispose === 'function') {
+            prevBg.dispose()
+          }
+          
+          // Scale to fit canvas exactly
+          const imgWidth = img.width || 1
+          const imgHeight = img.height || 1
+          const scaleX = canvasSize.width / imgWidth
+          const scaleY = canvasSize.height / imgHeight
+          
+          // Apply scale before setting as background
+          img.scaleX = scaleX
+          img.scaleY = scaleY
+          img.left = 0
+          img.top = 0
+          img.originX = 'left'
+          img.originY = 'top'
+          img.selectable = false
+          img.evented = false
+          
+          // Use setBackgroundImage with the pre-scaled image
+          canvas.setBackgroundImage(img, () => {
+            canvas.renderAll()
+          })
+          
+          // Store as last successful background
+          lastSuccessfulBackgroundRef.current = img
+          setBackgroundError(null)
+          
+        } catch (error) {
+          console.error('Failed to load background image:', error)
+          
+          // Only update state if this is still the current load operation
+          if (loadId !== backgroundLoadIdRef.current) {
+            return
+          }
+          
+          setBackgroundError(
+            error instanceof Error ? error.message : 'Failed to load background image'
+          )
+          
+          // Fallback: try to use last successful background if available
+          if (lastSuccessfulBackgroundRef.current) {
+            console.log('Using last successful background as fallback')
+            const fallbackImg = lastSuccessfulBackgroundRef.current
+            
+            // Rescale for current canvas size
+            const imgWidth = fallbackImg.width || 1
+            const imgHeight = fallbackImg.height || 1
+            fallbackImg.scaleX = canvasSize.width / imgWidth
+            fallbackImg.scaleY = canvasSize.height / imgHeight
+            
+            canvas.setBackgroundImage(fallbackImg, () => {
+              canvas.renderAll()
+            })
+          } else {
+            // No fallback available - set a white background
+            canvas.setBackgroundColor('#ffffff', () => {
+              canvas.renderAll()
+            })
+          }
+        } finally {
+          if (loadId === backgroundLoadIdRef.current) {
+            setIsBackgroundLoading(false)
+          }
+        }
+      }
+      
+      loadBackgroundImage()
     }
     
-    // Force canvas to not exceed its set dimensions
-    canvas.clipPath = new fabric.Rect({
-      left: 0,
-      top: 0,
-      width: canvasSize.width,
-      height: canvasSize.height,
-      absolutePositioned: true,
-    })
     canvas.renderAll()
   }, [canvasSize, background])
 
@@ -1054,16 +1278,36 @@ export default function CanvasEditor({
     const text = textObj.text || ''
     const variables = extractVariables(text)
     
-    // Start with user styles as the base (deep copy to avoid mutation)
-    const newStyles: Record<number, Record<number, any>> = userStyles 
-      ? JSON.parse(JSON.stringify(userStyles)) 
-      : {}
+    // Start fresh - we'll rebuild styles from scratch
+    const newStyles: Record<number, Record<number, any>> = {}
+    
+    // First, copy user styles but REMOVE any fill colors (those will be re-applied fresh)
+    // This prevents stale variable colors from persisting at wrong positions
+    if (userStyles) {
+      Object.entries(userStyles).forEach(([lineIdx, lineStyles]) => {
+        const lineIndex = parseInt(lineIdx)
+        if (!newStyles[lineIndex]) {
+          newStyles[lineIndex] = {}
+        }
+        Object.entries(lineStyles).forEach(([charIdx, charStyle]) => {
+          const charIndex = parseInt(charIdx)
+          // Copy style but exclude fill - we'll set fill based on current variable positions
+          const { fill, ...styleWithoutFill } = charStyle || {}
+          if (Object.keys(styleWithoutFill).length > 0) {
+            newStyles[lineIndex][charIndex] = styleWithoutFill
+          }
+        })
+      })
+    }
     
     if (variables.length === 0) {
-      // Apply only user styles if no variables
+      // No variables - apply user styles without fill colors (use default text color)
       textObj.styles = newStyles
       return
     }
+    
+    // Build a set of character positions that are inside variables
+    const variableCharPositions = new Set<string>() // "lineIndex,charIndex"
     
     // Build styles object for Fabric.js
     // Fabric uses styles[lineIndex][charIndex] format
@@ -1100,8 +1344,13 @@ export default function CanvasEditor({
           // Apply style to each character in the variable
           // Apply variable color + any user-defined formatting to ALL characters
           for (let i = localStart; i < localEnd; i++) {
+            // Mark this position as a variable position
+            variableCharPositions.add(`${lineIndex},${i}`)
+            
+            // Merge with existing style (which may have bold/italic from user)
             newStyles[lineIndex][i] = {
-              ...varFormat,  // Apply variable-specific formatting to all chars
+              ...(newStyles[lineIndex][i] || {}),
+              ...varFormat,  // Apply variable-specific formatting
               fill: color,   // Apply color for syntax highlighting
             }
           }
@@ -1140,11 +1389,12 @@ export default function CanvasEditor({
         const variables = extractVariables(originalContent)
         const variableStylesMap = el.variableStyles || {}
         
-        // If no variables, just return as-is
+        // If no variables, strip fill colors and return
         if (variables.length === 0) {
           return {
             ...el,
-            content: replaceAllVariables(el.content, rowBindings)
+            content: replaceAllVariables(el.content, rowBindings),
+            styles: stripFillFromStyles(el.styles) // Strip fill colors
           }
         }
         
@@ -1233,7 +1483,7 @@ export default function CanvasEditor({
         return {
           ...el,
           content: newContent,
-          styles: Object.keys(newStyles).length > 0 ? newStyles : el.styles
+          styles: Object.keys(newStyles).length > 0 ? newStyles : stripFillFromStyles(el.styles)
         }
       }
       return el
@@ -1296,10 +1546,8 @@ export default function CanvasEditor({
             editable: !isPreviewMode,  // Disable text editing in preview mode
             lockScalingFlip: true,
           })
-          // Apply per-character styles from element state
-          if (element.styles) {
-            textObj.styles = JSON.parse(JSON.stringify(element.styles))
-          }
+          // Apply per-character styles from element state (strip fill - it's for syntax highlighting only)
+          textObj.styles = stripFillFromStyles(element.styles)
           // Apply variable syntax highlighting (only in edit mode)
           if (!isPreviewMode) {
             // Get original element for variableStyles (displayElements may have modified content)
@@ -1342,10 +1590,8 @@ export default function CanvasEditor({
             editable: !isPreviewMode,  // Disable text editing in preview mode
             lockScalingFlip: true,
           })
-          // Apply per-character styles from element state
-          if (element.styles) {
-            textObj.styles = JSON.parse(JSON.stringify(element.styles))
-          }
+          // Apply per-character styles from element state (strip fill - it's for syntax highlighting only)
+          textObj.styles = stripFillFromStyles(element.styles)
           // Apply variable syntax highlighting (only in edit mode)
           if (!isPreviewMode) {
             // Get original element for variableStyles (displayElements may have modified content)
@@ -1417,7 +1663,8 @@ export default function CanvasEditor({
       canvas.bringToFront(obj)
     })
 
-    canvas.renderAll()
+    // Just render - don't reset viewport (fitCanvasToContainer handles zoom)
+    canvas.requestRenderAll()
   }, [displayElements, isReady, isPreviewMode, canvasSize.width])
 
   // Select object when selectedElementId changes
@@ -1437,39 +1684,83 @@ export default function CanvasEditor({
     }
   }, [selectedElementId])
 
-  // Auto-resize logic with zoom
+  // Fit-to-screen using Fabric.js viewport transform (preserves native resolution for export)
   const containerRef = useRef<HTMLDivElement>(null)
-  const [scale, setScale] = useState(1)
-  const [zoomLevel, setZoomLevel] = useState(1)
+  const [zoomLevel, setZoomLevel] = useState(1) // User's manual zoom multiplier
 
+  // Fit workspace to screen - uses Fabric.js viewport transform, NOT CSS
+  const fitWorkspaceToScreen = useCallback(() => {
+    const canvas = fabricCanvasRef.current
+    const container = containerRef.current
+    if (!canvas || !container) return
+
+    // Store content dimensions on canvas for export functions
+    const designWidth = canvasSize.width
+    const designHeight = canvasSize.height
+    ;(canvas as any)._contentWidth = designWidth
+    ;(canvas as any)._contentHeight = designHeight
+
+    const padding = 50 // Padding around the canvas
+    const containerWidth = container.offsetWidth
+    const containerHeight = container.offsetHeight
+
+    if (containerWidth <= 0 || containerHeight <= 0) return
+    
+    // Update canvas element size to match container
+    canvas.setDimensions(
+      { width: containerWidth, height: containerHeight },
+      { cssOnly: false, backstoreOnly: false }
+    )
+
+    // Step 1: Calculate scale to fit design in container (with padding)
+    const scale = Math.min(
+      (containerWidth - padding) / designWidth,
+      (containerHeight - padding) / designHeight
+    )
+
+    // Apply user's manual zoom multiplier
+    const finalScale = scale * zoomLevel
+
+    // Step 2: Calculate centering offsets (panX and panY)
+    // This formula ensures the scaled content is mathematically centered
+    const panX = (containerWidth - (designWidth * finalScale)) / 2
+    const panY = (containerHeight - (designHeight * finalScale)) / 2
+
+    // Step 3: Apply viewport transform: [scaleX, skewY, skewX, scaleY, translateX, translateY]
+    canvas.setZoom(finalScale)
+    canvas.setViewportTransform([finalScale, 0, 0, finalScale, panX, panY])
+    
+    // Add clip path to only show the certificate area (prevents seeing outside content)
+    canvas.clipPath = new fabric.Rect({
+      left: 0,
+      top: 0,
+      width: designWidth,
+      height: designHeight,
+      absolutePositioned: true,
+    })
+    
+    canvas.calcOffset()
+    canvas.renderAll()
+  }, [canvasSize, zoomLevel])
+
+  // Run fitWorkspaceToScreen immediately after canvas is ready and on resize
   useEffect(() => {
-    const calculateScale = () => {
-      if (!containerRef.current) return
-      const container = containerRef.current
-      const padding = 16 // Reduced padding
-      const availableWidth = container.clientWidth - padding
-      const availableHeight = container.clientHeight - padding
+    if (!isReady) return
 
-      if (availableWidth <= 0 || availableHeight <= 0) return
+    // Run immediately
+    fitWorkspaceToScreen()
 
-      const scaleX = availableWidth / canvasSize.width
-      const scaleY = availableHeight / canvasSize.height
+    // Also run on container resize
+    const container = containerRef.current
+    if (!container) return
 
-      // Fit to screen base scale
-      const baseScale = Math.min(scaleX, scaleY, 1)
-      setScale(baseScale * zoomLevel)
-    }
-
-    const observer = new ResizeObserver(calculateScale)
-    if (containerRef.current) {
-      observer.observe(containerRef.current)
-    }
-
-    // Also recalculate when canvas size changes
-    calculateScale()
+    const observer = new ResizeObserver(() => {
+      fitWorkspaceToScreen()
+    })
+    observer.observe(container)
 
     return () => observer.disconnect()
-  }, [canvasSize, zoomLevel])
+  }, [isReady, fitWorkspaceToScreen])
 
   // Handle mouse wheel zoom
   useEffect(() => {
@@ -1493,6 +1784,43 @@ export default function CanvasEditor({
       ref={containerRef}
       className="flex items-center justify-center w-full h-full p-2 overflow-hidden bg-gray-100/50 dark:bg-gray-900/50 relative"
     >
+      {/* Background Loading Indicator */}
+      {isBackgroundLoading && (
+        <div className="absolute inset-0 bg-black/30 flex items-center justify-center z-20 pointer-events-none">
+          <div className="bg-white dark:bg-gray-800 px-6 py-4 rounded-xl shadow-2xl flex items-center gap-3">
+            <svg className="w-6 h-6 animate-spin text-blue-500" viewBox="0 0 24 24" fill="none">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+            </svg>
+            <div>
+              <div className="text-sm font-semibold text-gray-900 dark:text-white">Loading Background</div>
+              <div className="text-xs text-gray-500 dark:text-gray-400">This may take a moment for large images...</div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Background Error Banner */}
+      {backgroundError && !isBackgroundLoading && (
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-red-500 text-white px-4 py-2 rounded-lg shadow-lg z-20 flex items-center gap-2 max-w-md">
+          <svg className="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+          </svg>
+          <div className="flex-1">
+            <div className="text-sm font-semibold">Background Load Failed</div>
+            <div className="text-xs opacity-90">{backgroundError}</div>
+          </div>
+          <button
+            onClick={() => setBackgroundError(null)}
+            className="text-white/80 hover:text-white p-1"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+      )}
+
       {/* Preview Mode Indicator */}
       {isPreviewMode && (
         <div className="absolute top-4 left-4 bg-green-500 text-white px-3 py-2 rounded-lg shadow-lg z-10 flex items-center gap-2">
@@ -1592,20 +1920,7 @@ export default function CanvasEditor({
         </div>
       )}
 
-      <div
-        id="certificate-canvas-container"
-        className="relative shadow-2xl border-2 border-gray-200 dark:border-gray-700 transition-transform duration-200 ease-out origin-center bg-white"
-        style={{
-          width: canvasSize.width,
-          height: canvasSize.height,
-          transform: `scale(${scale})`
-        }}
-      >
-        <canvas
-          ref={canvasRef}
-          id="certificate-canvas"
-        />
-      </div>
+      <div ref={canvasHostRef} className="absolute inset-0" />
     </div>
   )
 }

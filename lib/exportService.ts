@@ -5,6 +5,11 @@ import { saveAs } from 'file-saver'
 import { CertificateElement, ExportOptions, CSVData, VariableBindings, VariableStyles, RichTextStyles, CharacterStyle } from '@/types/certificate'
 import { replaceAllVariables, getAllUniqueVariables, extractVariables } from './variableParser'
 
+// CRITICAL: Disable Fabric.js retina scaling to prevent rendering issues
+if (typeof window !== 'undefined') {
+  (fabric as any).devicePixelRatio = 1
+}
+
 /**
  * Sanitize filename by replacing invalid characters
  */
@@ -68,6 +73,21 @@ export async function exportToPNG(
 
   // Deselect all objects before export
   fabricCanvas.discardActiveObject()
+  
+  // Save current viewport state
+  const currentViewport = fabricCanvas.viewportTransform?.slice() || [1, 0, 0, 1, 0, 0]
+  const currentZoom = fabricCanvas.getZoom()
+  const currentWidth = fabricCanvas.getWidth()
+  const currentHeight = fabricCanvas.getHeight()
+  
+  // Get the content dimensions from canvas data attributes or use default
+  const contentWidth = (fabricCanvas as any)._contentWidth || currentWidth
+  const contentHeight = (fabricCanvas as any)._contentHeight || currentHeight
+  
+  // Reset viewport to 1:1 for export
+  fabricCanvas.setViewportTransform([1, 0, 0, 1, 0, 0])
+  fabricCanvas.setZoom(1)
+  fabricCanvas.setDimensions({ width: contentWidth, height: contentHeight }, { cssOnly: false, backstoreOnly: false })
   fabricCanvas.renderAll()
 
   // Export to data URL with high quality
@@ -77,6 +97,12 @@ export async function exportToPNG(
     multiplier: multiplier,
     enableRetinaScaling: false,
   })
+  
+  // Restore viewport state
+  fabricCanvas.setDimensions({ width: currentWidth, height: currentHeight }, { cssOnly: false, backstoreOnly: false })
+  fabricCanvas.setZoom(currentZoom)
+  fabricCanvas.setViewportTransform(currentViewport as any)
+  fabricCanvas.renderAll()
 
   // Convert data URL to blob and download
   fetch(dataURL)
@@ -116,6 +142,21 @@ export async function exportToPDF(
 
   // Deselect all objects before export
   fabricCanvas.discardActiveObject()
+  
+  // Save current viewport state
+  const currentViewport = fabricCanvas.viewportTransform?.slice() || [1, 0, 0, 1, 0, 0]
+  const currentZoom = fabricCanvas.getZoom()
+  const currentWidth = fabricCanvas.getWidth()
+  const currentHeight = fabricCanvas.getHeight()
+  
+  // Get the content dimensions from canvas data attributes or use default
+  const contentWidth = (fabricCanvas as any)._contentWidth || currentWidth
+  const contentHeight = (fabricCanvas as any)._contentHeight || currentHeight
+  
+  // Reset viewport to 1:1 for export
+  fabricCanvas.setViewportTransform([1, 0, 0, 1, 0, 0])
+  fabricCanvas.setZoom(1)
+  fabricCanvas.setDimensions({ width: contentWidth, height: contentHeight }, { cssOnly: false, backstoreOnly: false })
   fabricCanvas.renderAll()
 
   // Export to data URL
@@ -126,19 +167,25 @@ export async function exportToPDF(
     enableRetinaScaling: false,
   })
 
-  // Get canvas dimensions
-  const width = (fabricCanvas.width || 800) * multiplier
-  const height = (fabricCanvas.height || 600) * multiplier
+  // Get canvas dimensions for PDF
+  const width = contentWidth * multiplier
+  const height = contentHeight * multiplier
+  
+  // Restore viewport state
+  fabricCanvas.setDimensions({ width: currentWidth, height: currentHeight }, { cssOnly: false, backstoreOnly: false })
+  fabricCanvas.setZoom(currentZoom)
+  fabricCanvas.setViewportTransform(currentViewport as any)
+  fabricCanvas.renderAll()
 
   // Create PDF with exact canvas dimensions
   const pdf = new jsPDF({
     orientation: width > height ? 'landscape' : 'portrait',
     unit: 'px',
-    format: [width / multiplier, height / multiplier],
+    format: [contentWidth, contentHeight],
   })
 
   // Add image to PDF
-  pdf.addImage(dataURL, 'PNG', 0, 0, width / multiplier, height / multiplier)
+  pdf.addImage(dataURL, 'PNG', 0, 0, contentWidth, contentHeight)
   pdf.save(sanitizeFilename(filename))
 }
 
@@ -648,9 +695,8 @@ export async function bulkExportWithVariables(
         onProgress(rowIndex + 1, csvData.rows.length)
       }
 
-      // Restore original canvas before next iteration
-      fabricCanvas.clear()
-      fabricCanvas.renderAll()
+      // Note: Don't clear the canvas here - let setElements handle the update
+      // The canvas will be automatically updated when elements change
       await new Promise(resolve => setTimeout(resolve, 100))
     }
 

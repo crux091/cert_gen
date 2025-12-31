@@ -6,6 +6,11 @@ import { CertificateElement, CSVData, CanvasBackground, VariableBindings } from 
 import { replaceAllVariables } from '@/lib/variableParser'
 import { fabric } from 'fabric'
 
+// CRITICAL: Disable Fabric.js retina scaling to prevent rendering issues
+if (typeof window !== 'undefined') {
+  (fabric as any).devicePixelRatio = 1
+}
+
 interface SlidePreviewPanelProps {
   csvData: CSVData
   elements: CertificateElement[]
@@ -96,9 +101,41 @@ export default function SlidePreviewPanel({
     // Add background image if exists
     if (background.type === 'image' && background.imageUrl) {
       await new Promise<void>((resolve) => {
+        const TIMEOUT = 15000 // 15 second timeout for preview thumbnails
+        let resolved = false
+        
+        const timeoutId = setTimeout(() => {
+          if (!resolved) {
+            resolved = true
+            console.warn('Background image load timeout for preview thumbnail')
+            resolve() // Continue without background image
+          }
+        }, TIMEOUT)
+        
         fabric.Image.fromURL(background.imageUrl!, (img) => {
-          img.scaleToWidth(canvasSize.width)
-          img.scaleToHeight(canvasSize.height)
+          if (resolved) return // Already timed out
+          resolved = true
+          clearTimeout(timeoutId)
+          
+          // Verify image loaded successfully
+          if (!img || !img.width || !img.height) {
+            console.warn('Background image failed to load properly for thumbnail')
+            resolve() // Continue without background
+            return
+          }
+          
+          // Scale to fit canvas exactly (not maintain aspect ratio)
+          const scaleX = canvasSize.width / (img.width || 1)
+          const scaleY = canvasSize.height / (img.height || 1)
+          img.set({
+            scaleX: scaleX,
+            scaleY: scaleY,
+            left: 0,
+            top: 0,
+            originX: 'left',
+            originY: 'top',
+          })
+          
           fabricCanvas.setBackgroundImage(img, () => {
             resolve()
           })
@@ -131,7 +168,29 @@ export default function SlidePreviewPanel({
         fabricCanvas.add(textbox)
       } else if (el.type === 'image' && el.content) {
         await new Promise<void>((resolve) => {
+          const TIMEOUT = 10000 // 10 second timeout for element images
+          let resolved = false
+          
+          const timeoutId = setTimeout(() => {
+            if (!resolved) {
+              resolved = true
+              console.warn(`Element image load timeout for ${el.id}`)
+              resolve() // Continue without this image
+            }
+          }, TIMEOUT)
+          
           fabric.Image.fromURL(el.content, (img) => {
+            if (resolved) return // Already timed out
+            resolved = true
+            clearTimeout(timeoutId)
+            
+            // Verify image loaded successfully
+            if (!img || !img.width || !img.height) {
+              console.warn(`Element image failed to load properly for ${el.id}`)
+              resolve() // Continue without this image
+              return
+            }
+            
             img.set({
               left: el.x,
               top: el.y,
