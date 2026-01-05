@@ -413,15 +413,17 @@ export default function CanvasEditor({
         const stylesToSave: Record<number, Record<number, any>> = {}
         Object.entries(newStyles).forEach(([lineIdx, lineStyles]) => {
           const lineIndex = parseInt(lineIdx)
-          Object.entries(lineStyles).forEach(([charIdx, charStyle]) => {
+          Object.entries(lineStyles as Record<string, CharacterStyle>).forEach(([charIdx, charStyle]) => {
             const charIndex = parseInt(charIdx)
             // Copy style but exclude fill
-            const { fill, ...styleWithoutFill } = charStyle || {}
-            if (Object.keys(styleWithoutFill).length > 0) {
-              if (!stylesToSave[lineIndex]) {
-                stylesToSave[lineIndex] = {}
+            if (charStyle) {
+              const { fill, ...styleWithoutFill } = charStyle
+              if (Object.keys(styleWithoutFill).length > 0) {
+                if (!stylesToSave[lineIndex]) {
+                  stylesToSave[lineIndex] = {}
+                }
+                stylesToSave[lineIndex][charIndex] = styleWithoutFill
               }
-              stylesToSave[lineIndex][charIndex] = styleWithoutFill
             }
           })
         })
@@ -1366,12 +1368,14 @@ export default function CanvasEditor({
         if (!newStyles[lineIndex]) {
           newStyles[lineIndex] = {}
         }
-        Object.entries(lineStyles).forEach(([charIdx, charStyle]) => {
+        Object.entries(lineStyles as Record<string, CharacterStyle>).forEach(([charIdx, charStyle]) => {
           const charIndex = parseInt(charIdx)
           // Copy style but exclude fill - we'll set fill based on current variable positions
-          const { fill, ...styleWithoutFill } = charStyle || {}
-          if (Object.keys(styleWithoutFill).length > 0) {
-            newStyles[lineIndex][charIndex] = styleWithoutFill
+          if (charStyle) {
+            const { fill, ...styleWithoutFill } = charStyle
+            if (Object.keys(styleWithoutFill).length > 0) {
+              newStyles[lineIndex][charIndex] = styleWithoutFill
+            }
           }
         })
       })
@@ -1598,6 +1602,14 @@ export default function CanvasEditor({
         const appliedWidth = Math.max(10, Math.round(baseWidth * (element.scaleX || 1)))
         const appliedHeight = Math.max(10, Math.round((baseHeight ?? 0) * (element.scaleY || 1)))
         const hasExplicitHeight = typeof baseHeight === 'number'
+
+        const normalizedFontStyle: '' | 'normal' | 'italic' | 'oblique' =
+          element.fontStyle === '' ||
+          element.fontStyle === 'normal' ||
+          element.fontStyle === 'italic' ||
+          element.fontStyle === 'oblique'
+            ? element.fontStyle
+            : 'normal'
         
         if (existingObj && existingObj.type === 'textbox') {
           // Update existing text object
@@ -1609,7 +1621,7 @@ export default function CanvasEditor({
             fontSize: element.fontSize || 16,
             fontWeight: element.fontWeight || 'normal',
             fontFamily: element.fontFamily || 'Arial',
-            fontStyle: element.fontStyle || 'normal',
+            fontStyle: normalizedFontStyle,
             underline: element.textDecoration === 'underline',
             fill: element.color || '#000000',
             textAlign: element.alignment || 'center',
@@ -1655,7 +1667,7 @@ export default function CanvasEditor({
             fontSize: element.fontSize || 16,
             fontWeight: element.fontWeight || 'normal',
             fontFamily: element.fontFamily || 'Arial',
-            fontStyle: element.fontStyle || 'normal',
+            fontStyle: normalizedFontStyle,
             underline: element.textDecoration === 'underline',
             fill: element.color || '#000000',
             textAlign: element.alignment || 'center',

@@ -337,6 +337,14 @@ async function renderCertificateToStaticCanvas(
       const exportWidth = Math.round((el.width || 200) * (el.scaleX || 1))
       const exportHeight = typeof el.height === 'number' ? Math.round(el.height * (el.scaleY || 1)) : undefined
 
+      const normalizedFontStyle: '' | 'normal' | 'italic' | 'oblique' =
+        el.fontStyle === '' ||
+        el.fontStyle === 'normal' ||
+        el.fontStyle === 'italic' ||
+        el.fontStyle === 'oblique'
+          ? el.fontStyle
+          : 'normal'
+
       const textbox = new fabric.Textbox(text, {
         left: el.x,
         top: el.y,
@@ -345,7 +353,7 @@ async function renderCertificateToStaticCanvas(
         fontSize: el.fontSize || 24,
         fontFamily: el.fontFamily || 'Arial',
         fontWeight: el.fontWeight || 'normal',
-        fontStyle: el.fontStyle || 'normal',
+        fontStyle: normalizedFontStyle,
         underline: el.textDecoration === 'underline',
         fill: el.color || '#000000',
         textAlign: el.alignment || 'left',
