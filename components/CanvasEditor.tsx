@@ -1369,9 +1369,11 @@ export default function CanvasEditor({
         Object.entries(lineStyles).forEach(([charIdx, charStyle]) => {
           const charIndex = parseInt(charIdx)
           // Copy style but exclude fill - we'll set fill based on current variable positions
-          const { fill, ...styleWithoutFill } = charStyle || {}
-          if (Object.keys(styleWithoutFill).length > 0) {
-            newStyles[lineIndex][charIndex] = styleWithoutFill
+          if (charStyle) {
+            const { fill, ...styleWithoutFill } = charStyle
+            if (Object.keys(styleWithoutFill).length > 0) {
+              newStyles[lineIndex][charIndex] = styleWithoutFill
+            }
           }
         })
       })
